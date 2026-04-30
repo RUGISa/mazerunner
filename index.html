@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MTA</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="menu" class="screen">
+    <div class="panel">
+      <h1>MTA</h1>
+      <p>
+        중앙 방을 기점으로 미로를 열고 나아가세요.<br>
+        재료는 채집에 시간이 걸리고, 길은 지도에 직접 기록됩니다.
+      </p>
+      <button id="startBtn">문 앞에 서기</button>
+      <div class="help">
+        WASD 이동 / 마우스 시점 / Shift 달리기<br>
+        E 상호작용 / M 지도(제작 후) / C 작업대 / R 미로 변경 / ESC 마우스 해제
+      </div>
+    </div>
+  </div>
+
+  <div id="message"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>
