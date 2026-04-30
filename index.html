@@ -19,7 +19,77 @@
       <button id="startBtn">문 앞에 서기</button>
       <div class="help">
         WASD 이동 / 마우스 시점 / Shift 달리기<br>
-        E 상호작용 / M 지도(제작 후) / C 작업대 / R 미로 변경 / ESC 마우스 해제
+        E 상호작용 / M 지도 / C 작업대 / R 미로 변경 / ESC 설정 / = 테스트
+      </div>
+    </div>
+  </div>
+
+  <div id="settings" class="screen hidden">
+    <div class="panel settings-panel">
+      <div class="settings-head">
+        <h2>설정</h2>
+        <button id="closeSettingsBtn" type="button">닫기</button>
+      </div>
+
+      <div class="settings-section">
+        <h3>키 설정</h3>
+        <div class="bind-grid">
+          <button class="bind-key" data-action="forward" type="button"><span>앞으로</span><strong></strong></button>
+          <button class="bind-key" data-action="back" type="button"><span>뒤로</span><strong></strong></button>
+          <button class="bind-key" data-action="left" type="button"><span>왼쪽</span><strong></strong></button>
+          <button class="bind-key" data-action="right" type="button"><span>오른쪽</span><strong></strong></button>
+          <button class="bind-key" data-action="run" type="button"><span>달리기</span><strong></strong></button>
+          <button class="bind-key" data-action="interact" type="button"><span>상호작용</span><strong></strong></button>
+          <button class="bind-key" data-action="map" type="button"><span>지도</span><strong></strong></button>
+          <button class="bind-key" data-action="craft" type="button"><span>작업대</span><strong></strong></button>
+          <button class="bind-key" data-action="reroll" type="button"><span>미로 변경</span><strong></strong></button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <label class="range-row" for="sensitivitySlider">
+          <span>마우스 감도</span>
+          <strong id="sensitivityValue">1.0x</strong>
+        </label>
+        <input id="sensitivitySlider" type="range" min="0.5" max="2.0" step="0.1" value="1">
+      </div>
+
+      <div class="settings-actions">
+        <button id="resetControlsBtn" class="quiet-button" type="button">키 기본값</button>
+        <button id="resetGameBtn" class="danger-button" type="button">게임 초기화</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="testPanel" class="screen hidden">
+    <div class="panel test-panel">
+      <div class="settings-head">
+        <h2>테스트</h2>
+        <button id="closeTestBtn" type="button">닫기</button>
+      </div>
+
+      <div class="settings-section">
+        <h3>재료</h3>
+        <div class="test-grid">
+          <label>나무<input id="testWood" type="number" min="0" max="999" step="1"></label>
+          <label>돌<input id="testStone" type="number" min="0" max="999" step="1"></label>
+          <label>수정<input id="testCrystal" type="number" min="0" max="999" step="1"></label>
+          <label>기력<input id="testStamina" type="number" min="0" max="100" step="1"></label>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>장비</h3>
+        <div class="test-grid">
+          <label>부츠 Lv<input id="testBoots" type="number" min="0" max="3" step="1"></label>
+          <label>지도 Lv<input id="testMarker" type="number" min="0" max="2" step="1"></label>
+          <label class="test-check"><input id="testLantern" type="checkbox">랜턴</label>
+        </div>
+      </div>
+
+      <div class="settings-actions">
+        <button id="applyTestBtn" type="button">적용</button>
+        <button id="fillTestBtn" class="quiet-button" type="button">넉넉히 채우기</button>
       </div>
     </div>
   </div>

@@ -4,9 +4,39 @@ const ctx = canvas.getContext("2d");
 const menu = document.getElementById("menu");
 const startBtn = document.getElementById("startBtn");
 const messageBox = document.getElementById("message");
+const settingsScreen = document.getElementById("settings");
+const closeSettingsBtn = document.getElementById("closeSettingsBtn");
+const resetControlsBtn = document.getElementById("resetControlsBtn");
+const resetGameBtn = document.getElementById("resetGameBtn");
+const testPanel = document.getElementById("testPanel");
+const closeTestBtn = document.getElementById("closeTestBtn");
+const applyTestBtn = document.getElementById("applyTestBtn");
+const fillTestBtn = document.getElementById("fillTestBtn");
+const testWood = document.getElementById("testWood");
+const testStone = document.getElementById("testStone");
+const testCrystal = document.getElementById("testCrystal");
+const testStamina = document.getElementById("testStamina");
+const testBoots = document.getElementById("testBoots");
+const testMarker = document.getElementById("testMarker");
+const testLantern = document.getElementById("testLantern");
+const sensitivitySlider = document.getElementById("sensitivitySlider");
+const sensitivityValue = document.getElementById("sensitivityValue");
+const bindButtons = Array.from(document.querySelectorAll(".bind-key"));
 
 const keys = {};
 const mouse = { dx: 0 };
+
+const DEFAULT_CONTROLS = {
+  forward: "KeyW",
+  back: "KeyS",
+  left: "KeyA",
+  right: "KeyD",
+  run: "ShiftLeft",
+  interact: "KeyE",
+  map: "KeyM",
+  craft: "KeyC",
+  reroll: "KeyR"
+};
 
 const TILE = {
   EMPTY: 0,
@@ -40,8 +70,7 @@ const CRAFT_COSTS = {
   ],
   marker: [
     { stone: 2, crystal: 1 },
-    { stone: 3, crystal: 2 },
-    { stone: 4, crystal: 3 }
+    { stone: 4, crystal: 2 }
   ]
 };
 
@@ -83,6 +112,11 @@ let mazeSeed = getDailySeed(day);
 
 let mapOpen = false;
 let showCraft = false;
+let settingsOpen = false;
+let testOpen = false;
+let bindingAction = null;
+let controls = { ...DEFAULT_CONTROLS };
+let mouseSensitivity = 1;
 
 let stamina = 100;
 let staminaMax = 100;
@@ -100,7 +134,7 @@ let exploredTiles = {};
 let crafted = {
   boots: 0,
   lantern: false,
-  map: false,
+  map: true,
   marker: 0
 };
 
@@ -135,7 +169,7 @@ function normalizeCraftedProgress() {
   crafted.boots = crafted.boots === true ? 1 : clamp(Number(crafted.boots) || 0, 0, CRAFT_COSTS.boots.length);
   crafted.marker = crafted.marker === true ? 1 : clamp(Number(crafted.marker) || 0, 0, CRAFT_COSTS.marker.length);
   crafted.lantern = crafted.lantern === true;
-  crafted.map = crafted.map === true;
+  crafted.map = true;
 }
 
 function loadProgress() {
@@ -154,8 +188,150 @@ function loadProgress() {
     inventory = { wood: 0, stone: 0, crystal: 0 };
     collectedResources = {};
     exploredTiles = {};
-    crafted = { boots: 0, lantern: false, map: false, marker: 0 };
+    crafted = { boots: 0, lantern: false, map: true, marker: 0 };
   }
+}
+
+function loadSettings() {
+  try {
+    const savedControls = JSON.parse(localStorage.getItem("mta_controls") || "null");
+    const savedSensitivity = Number(localStorage.getItem("mta_mouse_sensitivity"));
+
+    if (savedControls) controls = { ...DEFAULT_CONTROLS, ...savedControls };
+    if (Number.isFinite(savedSensitivity) && savedSensitivity > 0) {
+      mouseSensitivity = clamp(savedSensitivity, 0.5, 2);
+    }
+  } catch {
+    controls = { ...DEFAULT_CONTROLS };
+    mouseSensitivity = 1;
+  }
+
+  updateSettingsUI();
+}
+
+function saveSettings() {
+  localStorage.setItem("mta_controls", JSON.stringify(controls));
+  localStorage.setItem("mta_mouse_sensitivity", String(mouseSensitivity));
+}
+
+function formatKey(code) {
+  if (code.startsWith("Key")) return code.replace("Key", "");
+  if (code.startsWith("Digit")) return code.replace("Digit", "");
+  if (code === "Space") return "Space";
+  if (code === "ShiftLeft" || code === "ShiftRight") return "Shift";
+  if (code === "ControlLeft" || code === "ControlRight") return "Ctrl";
+  if (code === "AltLeft" || code === "AltRight") return "Alt";
+  if (code === "ArrowUp") return "↑";
+  if (code === "ArrowDown") return "↓";
+  if (code === "ArrowLeft") return "←";
+  if (code === "ArrowRight") return "→";
+  return code;
+}
+
+function updateSettingsUI() {
+  for (const button of bindButtons) {
+    const action = button.dataset.action;
+    const value = button.querySelector("strong");
+
+    if (value) value.textContent = formatKey(controls[action]);
+    button.classList.toggle("waiting", bindingAction === action);
+  }
+
+  sensitivitySlider.value = String(mouseSensitivity);
+  sensitivityValue.textContent = `${mouseSensitivity.toFixed(1)}x`;
+}
+
+function openSettings() {
+  settingsOpen = true;
+  mapOpen = false;
+  showCraft = false;
+  gathering = null;
+  bindingAction = null;
+  settingsScreen.classList.remove("hidden");
+
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+
+  updateSettingsUI();
+}
+
+function closeSettings() {
+  settingsOpen = false;
+  bindingAction = null;
+  settingsScreen.classList.add("hidden");
+  updateSettingsUI();
+
+  if (gameStarted) canvas.requestPointerLock();
+}
+
+function resetGameProgress() {
+  localStorage.removeItem("mta_day");
+  localStorage.removeItem("mta_inventory");
+  localStorage.removeItem("mta_crafted");
+  localStorage.removeItem("mta_collected_resources");
+  localStorage.removeItem("mta_explored_tiles");
+
+  day = getStoredDay();
+  mazeSeed = getDailySeed(day);
+  mapOpen = false;
+  showCraft = false;
+  gathering = null;
+  stamina = staminaMax;
+  inventory = { wood: 0, stone: 0, crystal: 0 };
+  collectedResources = {};
+  exploredTiles = {};
+  crafted = { boots: 0, lantern: false, map: true, marker: 0 };
+
+  generateMaze();
+  saveProgress();
+}
+
+function syncTestPanel() {
+  testWood.value = String(inventory.wood);
+  testStone.value = String(inventory.stone);
+  testCrystal.value = String(inventory.crystal);
+  testStamina.value = String(Math.round(stamina));
+  testBoots.value = String(getUpgradeLevel("boots"));
+  testMarker.value = String(getUpgradeLevel("marker"));
+  testLantern.checked = crafted.lantern;
+}
+
+function openTestPanel() {
+  if (!gameStarted) return;
+
+  testOpen = true;
+  mapOpen = false;
+  showCraft = false;
+  gathering = null;
+  testPanel.classList.remove("hidden");
+  syncTestPanel();
+
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+}
+
+function closeTestPanel() {
+  testOpen = false;
+  testPanel.classList.add("hidden");
+
+  if (gameStarted && !settingsOpen) canvas.requestPointerLock();
+}
+
+function readTestNumber(input, min, max) {
+  return Math.round(clamp(Number(input.value) || 0, min, max));
+}
+
+function applyTestValues() {
+  inventory.wood = readTestNumber(testWood, 0, 999);
+  inventory.stone = readTestNumber(testStone, 0, 999);
+  inventory.crystal = readTestNumber(testCrystal, 0, 999);
+  stamina = readTestNumber(testStamina, 0, staminaMax);
+  crafted.boots = readTestNumber(testBoots, 0, CRAFT_COSTS.boots.length);
+  crafted.marker = readTestNumber(testMarker, 0, CRAFT_COSTS.marker.length);
+  crafted.lantern = testLantern.checked;
+  crafted.map = true;
+
+  saveProgress();
+  syncTestPanel();
+  showMessage("테스트 값 적용");
 }
 
 function createRng(seed) {
@@ -634,7 +810,7 @@ function cancelGathering(text) {
 function updateGathering() {
   if (!gathering) return;
 
-  if (keys.KeyW || keys.KeyA || keys.KeyS || keys.KeyD) {
+  if (keys[controls.forward] || keys[controls.left] || keys[controls.back] || keys[controls.right]) {
     cancelGathering("움직여서 채집이 중단되었습니다.");
     return;
   }
@@ -746,7 +922,6 @@ function formatCost(cost) {
 function canCraft(item) {
   if (item === "boots") return hasMaterials(getNextUpgradeCost("boots"));
   if (item === "lantern") return inventory.wood >= 2 && inventory.crystal >= 2 && !crafted.lantern;
-  if (item === "map") return inventory.wood >= 2 && inventory.stone >= 1 && !crafted.map;
   if (item === "marker") return crafted.map && hasMaterials(getNextUpgradeCost("marker"));
   return false;
 }
@@ -774,21 +949,11 @@ function craft(item) {
     return;
   }
 
-  if (item === "map" && canCraft("map")) {
-    inventory.wood -= 2;
-    inventory.stone -= 1;
-    crafted.map = true;
-    revealAroundPlayer();
-    saveProgress();
-    showMessage("탐험 지도 제작 완료. M키로 밝혀진 길을 볼 수 있습니다.");
-    return;
-  }
-
   if (item === "marker" && canCraft("marker")) {
     spendMaterials(getNextUpgradeCost("marker"));
     crafted.marker = getUpgradeLevel("marker") + 1;
     saveProgress();
-    showMessage(`위치 표식 Lv ${crafted.marker} 강화 완료`);
+    showMessage(`지도 업그레이드 Lv ${crafted.marker} 완료`);
     return;
   }
 
@@ -809,13 +974,13 @@ function updateMovement() {
   let ix = 0;
   let iy = 0;
 
-  if (keys.KeyW) { ix += fx; iy += fy; }
-  if (keys.KeyS) { ix -= fx; iy -= fy; }
-  if (keys.KeyA) { ix -= rx; iy -= ry; }
-  if (keys.KeyD) { ix += rx; iy += ry; }
+  if (keys[controls.forward]) { ix += fx; iy += fy; }
+  if (keys[controls.back]) { ix -= fx; iy -= fy; }
+  if (keys[controls.left]) { ix -= rx; iy -= ry; }
+  if (keys[controls.right]) { ix += rx; iy += ry; }
 
   const moving = ix !== 0 || iy !== 0;
-  const running = keys.ShiftLeft && moving && stamina > 0;
+  const running = keys[controls.run] && moving && stamina > 0;
   let speed = running ? CONFIG.runSpeed : CONFIG.walkSpeed;
 
   speed *= 1 + getUpgradeLevel("boots") * 0.05;
@@ -831,10 +996,10 @@ function updateMovement() {
 }
 
 function update() {
-  if (!gameStarted) return;
+  if (!gameStarted || settingsOpen || testOpen) return;
 
   if (!mapOpen && !gathering) {
-    dir += mouse.dx * CONFIG.rotSpeed * 180 / Math.PI;
+    dir += mouse.dx * mouseSensitivity * CONFIG.rotSpeed * 180 / Math.PI;
   }
 
   mouse.dx = 0;
@@ -884,6 +1049,7 @@ function draw() {
   drawWorld(w, h);
   drawVisionMask(w, h);
   drawHUD(w, h);
+  if (getUpgradeLevel("marker") >= 2 && !mapOpen) drawMiniMap(w, h);
 
   if (mapOpen) drawFullMap(w, h);
   if (showCraft) drawCraftPanel(w, h);
@@ -924,14 +1090,20 @@ function drawVisionMask(w, h) {
   const inner = Math.max(w, h) * (crafted.lantern ? 0.24 : 0.09);
   const edgeDarkness = crafted.lantern ? 0.44 : 0.92;
   const midDarkness = crafted.lantern ? 0.1 : 0.42;
-  const gradient = ctx.createRadialGradient(w / 2, h / 2, inner, w / 2, h / 2, outer);
+
+  ctx.save();
+  ctx.translate(w / 2, h / 2);
+  ctx.scale(1.65, 1);
+
+  const gradient = ctx.createRadialGradient(0, 0, inner, 0, 0, outer);
 
   gradient.addColorStop(0, "rgba(0,0,0,0)");
   gradient.addColorStop(0.62, `rgba(0,0,0,${midDarkness})`);
   gradient.addColorStop(1, `rgba(0,0,0,${edgeDarkness})`);
 
   ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, w, h);
+  ctx.fillRect(-w, -h, w * 2, h * 2);
+  ctx.restore();
 }
 
 function getWallColor(tile, shade) {
@@ -984,32 +1156,37 @@ function drawResourcePill(label, value, x0, y0, w0, color) {
 }
 
 function drawHUD(w, h) {
-  drawPanel(18, 18, 286, 130, 8, "rgba(20,17,13,0.76)", "rgba(224,198,142,0.18)");
+  const panelW = 430;
+  const panelH = 92;
+  const x0 = w / 2 - panelW / 2;
+  const y0 = 18;
 
+  drawPanel(x0, y0, panelW, panelH, 8, "rgba(20,17,13,0.74)", "rgba(224,198,142,0.16)");
+
+  ctx.textAlign = "center";
   ctx.fillStyle = "#d6bd82";
   ctx.font = "bold 13px Arial";
-  ctx.fillText(`DAY ${day}`, 34, 42);
+  ctx.fillText(`DAY ${day}`, x0 + panelW / 2, y0 + 24);
 
-  ctx.fillStyle = crafted.map ? "#bfc8b1" : "#b7aca0";
-  ctx.font = "12px Arial";
-  ctx.fillText(crafted.map ? "M 탐험 지도" : "지도 미제작", 206, 42);
-
-  drawResourcePill("나무", inventory.wood, 32, 58, 78, "#9d6f3f");
-  drawResourcePill("돌", inventory.stone, 116, 58, 70, "#85888c");
-  drawResourcePill("수정", inventory.crystal, 192, 58, 82, "#78a9c5");
+  ctx.textAlign = "left";
+  drawResourcePill("나무", inventory.wood, x0 + 20, y0 + 38, 84, "#9d6f3f");
+  drawResourcePill("돌", inventory.stone, x0 + 112, y0 + 38, 78, "#85888c");
+  drawResourcePill("수정", inventory.crystal, x0 + 198, y0 + 38, 88, "#78a9c5");
 
   ctx.fillStyle = "#aaa092";
   ctx.font = "12px Arial";
-  ctx.fillText("기력", 32, 103);
+  ctx.fillText("기력", x0 + 306, y0 + 54);
 
-  drawPanel(68, 93, 188, 12, 6, "rgba(255,255,255,0.12)", null);
-  drawPanel(68, 93, 188 * (stamina / staminaMax), 12, 6, "#cbbf9d", null);
+  drawPanel(x0 + 342, y0 + 45, 68, 12, 6, "rgba(255,255,255,0.12)", null);
+  drawPanel(x0 + 342, y0 + 45, 68 * (stamina / staminaMax), 12, 6, "#cbbf9d", null);
 
+  ctx.textAlign = "center";
   ctx.fillStyle = "rgba(255,255,255,0.45)";
   ctx.font = "11px Arial";
-  ctx.fillText(gathering ? "채집 중" : "E 상호작용", 32, 130);
-  ctx.fillText("R 새 미로", 122, 130);
-  ctx.fillText("C 제작", 204, 130);
+  ctx.fillText(gathering ? "채집 중" : `${formatKey(controls.interact)} 상호작용`, x0 + 112, y0 + 78);
+  ctx.fillText(`${formatKey(controls.map)} 지도`, x0 + 214, y0 + 78);
+  ctx.fillText(`${formatKey(controls.craft)} 제작`, x0 + 310, y0 + 78);
+  ctx.textAlign = "left";
 
   ctx.strokeStyle = "rgba(255,255,255,0.85)";
   ctx.lineWidth = 1;
@@ -1065,14 +1242,44 @@ function drawGatherProgress(w, h) {
 }
 
 function getInteractionText(tile) {
-  if (tile === TILE.MAZE_DOOR) return "E 문 열기";
-  if (tile === TILE.WORKBENCH) return "E 제작대";
-  if (tile === TILE.STORAGE) return "E 보관함";
-  if (tile === TILE.WOOD) return "E 나무 채집";
-  if (tile === TILE.STONE) return "E 돌 채집";
-  if (tile === TILE.CRYSTAL) return "E 수정 채집";
-  if (tile === TILE.EXIT) return "E 깊은 출구";
-  return "E 상호작용";
+  const key = formatKey(controls.interact);
+
+  if (tile === TILE.MAZE_DOOR) return `${key} 문 열기`;
+  if (tile === TILE.WORKBENCH) return `${key} 제작대`;
+  if (tile === TILE.STORAGE) return `${key} 보관함`;
+  if (tile === TILE.WOOD) return `${key} 나무 채집`;
+  if (tile === TILE.STONE) return `${key} 돌 채집`;
+  if (tile === TILE.CRYSTAL) return `${key} 수정 채집`;
+  if (tile === TILE.EXIT) return `${key} 깊은 출구`;
+  return `${key} 상호작용`;
+}
+
+function getMapTileColor(tile, explored) {
+  if (!explored) return "#070707";
+  if (tile === TILE.WALL) return "#4b4b4b";
+  if (tile === TILE.WOOD) return "#8a6139";
+  if (tile === TILE.STONE) return "#777a80";
+  if (tile === TILE.CRYSTAL) return "#80a8c8";
+  if (tile === TILE.MAZE_DOOR) return "#80562c";
+  if (tile === TILE.EXIT) return "#b06150";
+  if (tile === TILE.WORKBENCH) return "#9a7442";
+  if (tile === TILE.STORAGE) return "#63768d";
+  return "#191919";
+}
+
+function drawPlayerMapMarker(px, py, size, facingLength) {
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(px, py, size, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (facingLength <= 0) return;
+
+  ctx.strokeStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.moveTo(px, py);
+  ctx.lineTo(px + cosd(dir) * facingLength, py + sind(dir) * facingLength);
+  ctx.stroke();
 }
 
 function drawFullMap(w, h) {
@@ -1101,47 +1308,58 @@ function drawFullMap(w, h) {
       const tile = level[yy][xx];
       const explored = isTileExplored(xx, yy);
 
-      if (!explored) {
-        ctx.fillStyle = "#070707";
-        ctx.fillRect(ox + xx * cell, oy + yy * cell, Math.ceil(cell), Math.ceil(cell));
-        continue;
-      }
-
-      if (tile === TILE.WALL) ctx.fillStyle = "#4b4b4b";
-      else ctx.fillStyle = "#191919";
-
-      if (tile === TILE.WOOD) ctx.fillStyle = "#8a6139";
-      if (tile === TILE.STONE) ctx.fillStyle = "#777a80";
-      if (tile === TILE.CRYSTAL) ctx.fillStyle = "#80a8c8";
-      if (tile === TILE.MAZE_DOOR) ctx.fillStyle = "#80562c";
-      if (tile === TILE.EXIT) ctx.fillStyle = "#b06150";
-      if (tile === TILE.WORKBENCH) ctx.fillStyle = "#9a7442";
-      if (tile === TILE.STORAGE) ctx.fillStyle = "#63768d";
-
+      ctx.fillStyle = getMapTileColor(tile, explored);
       ctx.fillRect(ox + xx * cell, oy + yy * cell, Math.ceil(cell), Math.ceil(cell));
     }
   }
 
-  const px = ox + x * cell;
-  const py = oy + y * cell;
   const markerLevel = getUpgradeLevel("marker");
-  const markerRadius = markerLevel > 0 ? 3.2 + markerLevel * 0.65 : 3;
-  const facingLength = markerLevel > 0 ? 10 + markerLevel * 4 : 8;
 
-  ctx.fillStyle = markerLevel > 0 ? "#ffffff" : "#e8d9b9";
-  ctx.beginPath();
-  ctx.arc(px, py, markerRadius, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.strokeStyle = markerLevel > 0 ? "#ffffff" : "rgba(255,255,255,0.7)";
-  ctx.beginPath();
-  ctx.moveTo(px, py);
-  ctx.lineTo(px + cosd(dir) * facingLength, py + sind(dir) * facingLength);
-  ctx.stroke();
+  if (markerLevel >= 1) {
+    const px = ox + x * cell;
+    const py = oy + y * cell;
+    drawPlayerMapMarker(px, py, markerLevel >= 2 ? 5 : 4, markerLevel >= 2 ? 18 : 0);
+  }
 
   ctx.fillStyle = "#bdbdbd";
   ctx.font = "13px Arial";
-  ctx.fillText("M 닫기", startX, startY + size + 22);
+  ctx.fillText(`${formatKey(controls.map)} 닫기`, startX, startY + size + 22);
+}
+
+function drawMiniMap(w, h) {
+  const size = 158;
+  const radius = 12;
+  const x0 = w - size - 18;
+  const y0 = w < 760 ? 126 : 18;
+  const cells = radius * 2 + 1;
+  const cell = size / cells;
+  const px = Math.floor(x);
+  const py = Math.floor(y);
+
+  drawPanel(x0 - 8, y0 - 28, size + 16, size + 36, 8, "rgba(18,15,11,0.78)", "rgba(224,198,142,0.18)");
+
+  ctx.fillStyle = "#d8bd78";
+  ctx.font = "bold 12px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("지도", x0 + size / 2, y0 - 10);
+  ctx.textAlign = "left";
+
+  for (let yy = -radius; yy <= radius; yy++) {
+    for (let xx = -radius; xx <= radius; xx++) {
+      const tx = px + xx;
+      const ty = py + yy;
+      const sx = x0 + (xx + radius) * cell;
+      const sy = y0 + (yy + radius) * cell;
+      const inBounds = tx >= 0 && tx < mapW && ty >= 0 && ty < mapH;
+      const tile = inBounds ? level[ty][tx] : TILE.WALL;
+      const explored = inBounds && isTileExplored(tx, ty);
+
+      ctx.fillStyle = getMapTileColor(tile, explored);
+      ctx.fillRect(sx, sy, Math.ceil(cell), Math.ceil(cell));
+    }
+  }
+
+  drawPlayerMapMarker(x0 + size / 2, y0 + size / 2, 4, 13);
 }
 
 function drawCraftRow(x0, y0, key, title, cost, note, done) {
@@ -1165,8 +1383,8 @@ function drawCraftRow(x0, y0, key, title, cost, note, done) {
 
 function drawCraftPanel(w, h) {
   const boxW = 420;
-  const boxH = 330;
-  const x0 = w - boxW - 28;
+  const boxH = 274;
+  const x0 = w / 2 - boxW / 2;
   const y0 = 28;
 
   drawPanel(x0, y0, boxW, boxH, 8, "rgba(19,16,12,0.88)", "rgba(224,198,142,0.2)");
@@ -1183,7 +1401,7 @@ function drawCraftPanel(w, h) {
   const markerLevel = getUpgradeLevel("marker");
   const bootsMax = bootsLevel >= CRAFT_COSTS.boots.length;
   const markerMax = markerLevel >= CRAFT_COSTS.marker.length;
-  const markerCost = crafted.map ? formatCost(getNextUpgradeCost("marker")) : "탐험 지도 필요";
+  const markerCost = formatCost(getNextUpgradeCost("marker"));
 
   drawCraftRow(
     x0 + 22,
@@ -1195,20 +1413,19 @@ function drawCraftPanel(w, h) {
     bootsMax
   );
   drawCraftRow(x0 + 22, y0 + 114, "2", "랜턴", "나무 2 / 수정 2", "시야 증가", crafted.lantern);
-  drawCraftRow(x0 + 22, y0 + 170, "3", "탐험 지도", "나무 2 / 돌 1", "걸어다닌 길 기록", crafted.map);
   drawCraftRow(
     x0 + 22,
-    y0 + 226,
-    "4",
-    `위치 표식 Lv ${markerLevel}/${CRAFT_COSTS.marker.length}`,
+    y0 + 170,
+    "3",
+    `지도 업그레이드 Lv ${markerLevel}/${CRAFT_COSTS.marker.length}`,
     markerCost,
-    "지도 표시 최대 강화",
+    markerLevel >= 2 ? "미니맵 활성화" : "내 위치 표시",
     markerMax
   );
 
   ctx.fillStyle = "#bdbdbd";
   ctx.font = "12px Arial";
-  ctx.fillText("C 닫기", x0 + 22, y0 + 310);
+  ctx.fillText(`${formatKey(controls.craft)} 닫기`, x0 + 22, y0 + 254);
 }
 
 function gameLoop() {
@@ -1221,42 +1438,110 @@ startBtn.addEventListener("click", () => {
   gameStarted = true;
   menu.classList.add("hidden");
   loadProgress();
+  loadSettings();
   generateMaze();
   canvas.requestPointerLock();
   showMessage("사방의 문을 E로 열 수 있습니다.");
 });
 
+closeSettingsBtn.addEventListener("click", closeSettings);
+
+resetControlsBtn.addEventListener("click", () => {
+  controls = { ...DEFAULT_CONTROLS };
+  mouseSensitivity = 1;
+  saveSettings();
+  updateSettingsUI();
+});
+
+resetGameBtn.addEventListener("click", () => {
+  if (!confirm("진행 상황을 초기화할까요? 키 설정은 유지됩니다.")) return;
+
+  resetGameProgress();
+  closeSettings();
+  showMessage("게임 진행이 초기화되었습니다.");
+});
+
+closeTestBtn.addEventListener("click", closeTestPanel);
+applyTestBtn.addEventListener("click", applyTestValues);
+
+fillTestBtn.addEventListener("click", () => {
+  testWood.value = "99";
+  testStone.value = "99";
+  testCrystal.value = "99";
+  testStamina.value = "100";
+  testBoots.value = String(CRAFT_COSTS.boots.length);
+  testMarker.value = String(CRAFT_COSTS.marker.length);
+  testLantern.checked = true;
+  applyTestValues();
+});
+
+sensitivitySlider.addEventListener("input", () => {
+  mouseSensitivity = clamp(Number(sensitivitySlider.value), 0.5, 2);
+  saveSettings();
+  updateSettingsUI();
+});
+
+for (const button of bindButtons) {
+  button.addEventListener("click", () => {
+    bindingAction = button.dataset.action;
+    updateSettingsUI();
+  });
+}
+
 window.addEventListener("resize", resizeCanvas);
 
 window.addEventListener("keydown", (e) => {
-  if (e.code === "Escape") {
-    if (document.pointerLockElement === canvas) document.exitPointerLock();
+  if (bindingAction) {
+    e.preventDefault();
+
+    if (e.code !== "Escape") {
+      controls[bindingAction] = e.code;
+      saveSettings();
+    }
+
+    bindingAction = null;
+    updateSettingsUI();
     return;
   }
 
-  if (!gameStarted) return;
-
-  if (e.code === "KeyM") {
-    if (!crafted.map) {
-      showMessage("탐험 지도를 먼저 제작해야 합니다.");
+  if (e.code === "Escape") {
+    if (testOpen) {
+      closeTestPanel();
       return;
     }
 
+    if (settingsOpen) closeSettings();
+    else openSettings();
+    return;
+  }
+
+  if (settingsOpen) return;
+  if (!gameStarted) return;
+
+  if (e.code === "Equal") {
+    if (testOpen) closeTestPanel();
+    else openTestPanel();
+    return;
+  }
+
+  if (testOpen) return;
+
+  if (e.code === controls.map) {
     mapOpen = !mapOpen;
     return;
   }
 
-  if (e.code === "KeyR") {
+  if (e.code === controls.reroll) {
     changeMazeDay();
     return;
   }
 
-  if (e.code === "KeyE") {
+  if (e.code === controls.interact) {
     interact();
     return;
   }
 
-  if (e.code === "KeyC") {
+  if (e.code === controls.craft) {
     if (scene === "base") showCraft = !showCraft;
     else showMessage("제작은 메인공간에서만 가능합니다.");
     return;
@@ -1265,8 +1550,7 @@ window.addEventListener("keydown", (e) => {
   if (showCraft && scene === "base") {
     if (e.code === "Digit1") craft("boots");
     if (e.code === "Digit2") craft("lantern");
-    if (e.code === "Digit3") craft("map");
-    if (e.code === "Digit4") craft("marker");
+    if (e.code === "Digit3") craft("marker");
   }
 
   keys[e.code] = true;
@@ -1283,11 +1567,12 @@ window.addEventListener("mousemove", (e) => {
 });
 
 canvas.addEventListener("click", () => {
-  if (gameStarted && document.pointerLockElement !== canvas) {
+  if (gameStarted && !settingsOpen && document.pointerLockElement !== canvas) {
     canvas.requestPointerLock();
   }
 });
 
+loadSettings();
 resizeCanvas();
 generateMaze();
 gameLoop();
