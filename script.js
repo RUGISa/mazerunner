@@ -1,5 +1,22 @@
+const THREE = window.THREE;
+
+if (!THREE) {
+  const fallbackStartBtn = document.getElementById("startBtn");
+  const fallbackMessageBox = document.getElementById("message");
+
+  if (fallbackStartBtn && fallbackMessageBox) {
+    fallbackStartBtn.addEventListener("click", () => {
+      fallbackMessageBox.textContent = "Three.js를 불러오지 못했습니다. 인터넷 연결 또는 CDN 차단을 확인하세요.";
+      fallbackMessageBox.classList.add("show");
+    });
+  }
+
+  throw new Error("Three.js failed to load. Check the CDN script in index.html.");
+}
+
 const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d");
+const hudCanvas = document.getElementById("hud");
+const ctx = hudCanvas.getContext("2d");
 
 const menu = document.getElementById("menu");
 const startBtn = document.getElementById("startBtn");
@@ -19,12 +36,79 @@ const testStamina = document.getElementById("testStamina");
 const testBoots = document.getElementById("testBoots");
 const testMarker = document.getElementById("testMarker");
 const testLantern = document.getElementById("testLantern");
+const testPortableWorkbench = document.getElementById("testPortableWorkbench");
 const sensitivitySlider = document.getElementById("sensitivitySlider");
 const sensitivityValue = document.getElementById("sensitivityValue");
 const bindButtons = Array.from(document.querySelectorAll(".bind-key"));
 
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  antialias: true,
+  powerPreference: "high-performance"
+});
+
+renderer.setClearColor(0x11100e, 1);
+setRendererColorSpace(renderer);
+
+const scene3d = new THREE.Scene();
+scene3d.background = new THREE.Color(0x11100e);
+scene3d.fog = new THREE.FogExp2(0x11100e, 0.09);
+
+const camera = new THREE.PerspectiveCamera(52, 1, 0.04, 18);
+const eyeLight = new THREE.PointLight(0xffdfad, 1.25, 12, 1.8);
+camera.add(eyeLight);
+scene3d.add(camera);
+
+const hemiLight = new THREE.HemisphereLight(0xb9c2d0, 0x251a11, 0.34);
+scene3d.add(hemiLight);
+
+const ambientLight = new THREE.AmbientLight(0x373029, 0.55);
+scene3d.add(ambientLight);
+
+let worldRoot = null;
+let renderPixelRatio = 1;
+const doorVisuals = new Map();
+const DOOR_OPEN_ANGLE = Math.PI * 0.52;
+const DOOR_ANIMATION_SPEED = 0.16;
+
+const FLOOR_Y = 0;
+const WALL_HEIGHT = 2.4;
+const EYE_HEIGHT = 1.35;
+const CEILING_Y = WALL_HEIGHT;
+
+const tempPosition = new THREE.Vector3();
+const tempQuaternion = new THREE.Quaternion();
+const tempScale = new THREE.Vector3(1, 1, 1);
+const tempMatrix = new THREE.Matrix4();
+const tempEuler = new THREE.Euler();
+const lookTarget = new THREE.Vector3();
+
+const floorTexture = createGridTexture("#211c16", "#2b241a", "rgba(255,255,255,0.045)");
+const ceilingTexture = createGridTexture("#151414", "#1c1b19", "rgba(255,255,255,0.03)");
+const wallTexture = createStoneWallTexture(false);
+const wallBumpTexture = createStoneWallTexture(true);
+const doorTexture = createDoorTexture(false);
+const doorBumpTexture = createDoorTexture(true);
+
+const materials = {
+  floor: new THREE.MeshStandardMaterial({ map: floorTexture, roughness: 0.96, metalness: 0.02, side: THREE.DoubleSide }),
+  baseFloor: new THREE.MeshStandardMaterial({ color: 0x2a2118, roughness: 0.92, metalness: 0.02, side: THREE.DoubleSide }),
+  ceiling: new THREE.MeshStandardMaterial({ map: ceilingTexture, roughness: 1, metalness: 0, side: THREE.DoubleSide }),
+  wall: new THREE.MeshStandardMaterial({ color: 0xd0ccc2, map: wallTexture, bumpMap: wallBumpTexture, bumpScale: 0.075, roughness: 0.96, metalness: 0.01 }),
+  wallTrim: new THREE.MeshStandardMaterial({ color: 0x383631, roughness: 0.96, metalness: 0.02 }),
+  door: new THREE.MeshStandardMaterial({ map: doorTexture, bumpMap: doorBumpTexture, bumpScale: 0.05, roughness: 0.88, metalness: 0.02 }),
+  doorFrame: new THREE.MeshStandardMaterial({ color: 0x3a2416, roughness: 0.84, metalness: 0.02 }),
+  doorMetal: new THREE.MeshStandardMaterial({ color: 0x282522, roughness: 0.42, metalness: 0.72 }),
+  wood: new THREE.MeshStandardMaterial({ color: 0x8f5d2d, roughness: 0.9, metalness: 0.02 }),
+  stone: new THREE.MeshStandardMaterial({ color: 0x7a7d84, roughness: 0.98, metalness: 0.02 }),
+  crystal: new THREE.MeshStandardMaterial({ color: 0x84c7ff, emissive: 0x246b99, emissiveIntensity: 0.7, roughness: 0.42, metalness: 0.04 }),
+  workbench: new THREE.MeshStandardMaterial({ color: 0x9a7040, roughness: 0.82, metalness: 0.03 }),
+  storage: new THREE.MeshStandardMaterial({ color: 0x5f7186, roughness: 0.76, metalness: 0.03 }),
+  exit: new THREE.MeshStandardMaterial({ color: 0xd76b51, emissive: 0x9c2a18, emissiveIntensity: 1.2, roughness: 0.45, metalness: 0.02, transparent: true, opacity: 0.84 })
+};
+
 const keys = {};
-const mouse = { dx: 0 };
+const mouse = { dx: 0, dy: 0 };
 
 const DEFAULT_CONTROLS = {
   forward: "KeyW",
@@ -71,13 +155,13 @@ const CRAFT_COSTS = {
   marker: [
     { stone: 2, crystal: 1 },
     { stone: 4, crystal: 2 }
-  ]
+  ],
+  portableWorkbench: { wood: 4, stone: 2 }
 };
 
 const CONFIG = {
   mazeFov: 52,
   lanternFov: 76,
-  rayCount: 420,
   mazeRayDepth: 9,
   lanternRayDepth: 30,
   rotSpeed: 0.0018,
@@ -87,6 +171,7 @@ const CONFIG = {
   mazeCells: 68,
   resourceDensity: 0.055,
   interactDistance: 1.25,
+  playerRadius: 0.30,
   gather: {
     wood: { duration: 72, staminaCost: 10, minStamina: 8 },
     stone: { duration: 108, staminaCost: 16, minStamina: 12 },
@@ -106,6 +191,7 @@ let centralBaseSpawn = null;
 let x = 6.5;
 let y = 6.5;
 let dir = 0;
+let pitch = 0;
 
 let day = getStoredDay();
 let mazeSeed = getDailySeed(day);
@@ -130,19 +216,209 @@ let inventory = {
 
 let collectedResources = {};
 let exploredTiles = {};
+let doorStates = {};
 
 let crafted = {
   boots: 0,
   lantern: false,
   map: true,
-  marker: 0
+  marker: 0,
+  portableWorkbench: false
 };
 
 let messageTimer = 0;
 
+
+function setRendererColorSpace(targetRenderer) {
+  if ("outputColorSpace" in targetRenderer && THREE.SRGBColorSpace) {
+    targetRenderer.outputColorSpace = THREE.SRGBColorSpace;
+  } else if ("outputEncoding" in targetRenderer && THREE.sRGBEncoding) {
+    targetRenderer.outputEncoding = THREE.sRGBEncoding;
+  }
+}
+
+function configureCanvasTexture(texture, useColor = true) {
+  if (useColor && "colorSpace" in texture && THREE.SRGBColorSpace) {
+    texture.colorSpace = THREE.SRGBColorSpace;
+  } else if (useColor && "encoding" in texture && THREE.sRGBEncoding) {
+    texture.encoding = THREE.sRGBEncoding;
+  }
+
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = 4;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function textureNoise(seed) {
+  let value = seed >>> 0;
+
+  return function nextNoise() {
+    value += 0x6D2B79F5;
+    let t = value;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shadeHex(hex, amount) {
+  const clean = hex.replace("#", "");
+  const r = clamp(parseInt(clean.slice(0, 2), 16) + amount, 0, 255);
+  const g = clamp(parseInt(clean.slice(2, 4), 16) + amount, 0, 255);
+  const b = clamp(parseInt(clean.slice(4, 6), 16) + amount, 0, 255);
+  return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+}
+
+function createGridTexture(base, alt, line) {
+  const textureCanvas = document.createElement("canvas");
+  textureCanvas.width = 128;
+  textureCanvas.height = 128;
+  const textureCtx = textureCanvas.getContext("2d");
+
+  textureCtx.fillStyle = base;
+  textureCtx.fillRect(0, 0, 128, 128);
+  textureCtx.fillStyle = alt;
+  textureCtx.fillRect(0, 0, 64, 64);
+  textureCtx.fillRect(64, 64, 64, 64);
+  textureCtx.strokeStyle = line;
+  textureCtx.lineWidth = 2;
+  textureCtx.strokeRect(0, 0, 128, 128);
+  textureCtx.beginPath();
+  textureCtx.moveTo(64, 0);
+  textureCtx.lineTo(64, 128);
+  textureCtx.moveTo(0, 64);
+  textureCtx.lineTo(128, 64);
+  textureCtx.stroke();
+
+  const texture = new THREE.CanvasTexture(textureCanvas);
+  return configureCanvasTexture(texture, true);
+}
+
+function createStoneWallTexture(bumpOnly) {
+  const textureCanvas = document.createElement("canvas");
+  textureCanvas.width = 256;
+  textureCanvas.height = 256;
+  const textureCtx = textureCanvas.getContext("2d");
+  const rng = textureNoise(bumpOnly ? 9017 : 4821);
+
+  textureCtx.fillStyle = bumpOnly ? "#858585" : "#615f58";
+  textureCtx.fillRect(0, 0, 256, 256);
+
+  const mortar = bumpOnly ? "#585858" : "#3f3d38";
+  const blockH = 38;
+
+  for (let row = 0; row < 8; row++) {
+    const y0 = row * blockH - 10;
+    const offset = row % 2 === 0 ? -24 : 10;
+
+    for (let col = -1; col < 6; col++) {
+      const blockW = 52 + Math.floor(rng() * 26);
+      const x0 = offset + col * 54 + Math.floor(rng() * 8);
+      const shade = bumpOnly ? 104 + Math.floor(rng() * 56) : Math.floor(rng() * 36) - 12;
+
+      textureCtx.fillStyle = bumpOnly ? `rgb(${shade},${shade},${shade})` : shadeHex("#69665d", shade);
+      textureCtx.fillRect(x0 + 2, y0 + 2, blockW - 4, blockH - 4);
+
+      textureCtx.strokeStyle = mortar;
+      textureCtx.lineWidth = 2;
+      textureCtx.strokeRect(x0 + 1, y0 + 1, blockW - 2, blockH - 2);
+
+      for (let p = 0; p < 8; p++) {
+        const px = x0 + 6 + rng() * Math.max(6, blockW - 12);
+        const py = y0 + 6 + rng() * Math.max(6, blockH - 12);
+        const alpha = bumpOnly ? 0.28 : 0.14;
+        textureCtx.fillStyle = `rgba(255,255,255,${alpha * rng()})`;
+        textureCtx.fillRect(px, py, 1.2 + rng() * 2, 1.2 + rng() * 2);
+      }
+
+      if (rng() > 0.57) {
+        textureCtx.strokeStyle = bumpOnly ? "rgba(48,48,48,0.66)" : "rgba(24,23,21,0.34)";
+        textureCtx.lineWidth = 1;
+        textureCtx.beginPath();
+        textureCtx.moveTo(x0 + 8 + rng() * (blockW - 16), y0 + 8);
+        textureCtx.lineTo(x0 + 10 + rng() * (blockW - 20), y0 + blockH - 8);
+        textureCtx.stroke();
+      }
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(textureCanvas);
+  return configureCanvasTexture(texture, !bumpOnly);
+}
+
+function createDoorTexture(bumpOnly) {
+  const textureCanvas = document.createElement("canvas");
+  textureCanvas.width = 256;
+  textureCanvas.height = 256;
+  const textureCtx = textureCanvas.getContext("2d");
+  const rng = textureNoise(bumpOnly ? 7461 : 3187);
+
+  textureCtx.fillStyle = bumpOnly ? "#8b8b8b" : "#68401f";
+  textureCtx.fillRect(0, 0, 256, 256);
+
+  const plankW = 42;
+  for (let x0 = 0; x0 < 256; x0 += plankW) {
+    const shade = bumpOnly ? 102 + Math.floor(rng() * 58) : Math.floor(rng() * 34) - 10;
+    textureCtx.fillStyle = bumpOnly ? `rgb(${shade},${shade},${shade})` : shadeHex("#774920", shade);
+    textureCtx.fillRect(x0, 0, plankW, 256);
+
+    textureCtx.strokeStyle = bumpOnly ? "#4f4f4f" : "rgba(37,20,9,0.55)";
+    textureCtx.lineWidth = 3;
+    textureCtx.beginPath();
+    textureCtx.moveTo(x0 + plankW - 1, 0);
+    textureCtx.lineTo(x0 + plankW - 1, 256);
+    textureCtx.stroke();
+
+    for (let gy = 8; gy < 256; gy += 18 + Math.floor(rng() * 12)) {
+      textureCtx.strokeStyle = bumpOnly ? "rgba(42,42,42,0.42)" : "rgba(255,210,138,0.08)";
+      textureCtx.lineWidth = 1;
+      textureCtx.beginPath();
+      textureCtx.moveTo(x0 + 6 + rng() * 6, gy);
+      textureCtx.quadraticCurveTo(x0 + 18 + rng() * 12, gy + 5, x0 + plankW - 7, gy + rng() * 8);
+      textureCtx.stroke();
+    }
+  }
+
+  for (const y0 of [58, 128, 198]) {
+    textureCtx.fillStyle = bumpOnly ? "#3a3a3a" : "#29231f";
+    textureCtx.fillRect(0, y0, 256, 12);
+    textureCtx.fillStyle = bumpOnly ? "#b0b0b0" : "rgba(213,177,103,0.20)";
+    textureCtx.fillRect(0, y0, 256, 2);
+  }
+
+  const texture = new THREE.CanvasTexture(textureCanvas);
+  return configureCanvasTexture(texture, !bumpOnly);
+}
+
 function resizeCanvas() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  renderPixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+
+  renderer.setPixelRatio(renderPixelRatio);
+  renderer.setSize(w, h, false);
+
+  hudCanvas.width = Math.floor(w * renderPixelRatio);
+  hudCanvas.height = Math.floor(h * renderPixelRatio);
+  hudCanvas.style.width = `${w}px`;
+  hudCanvas.style.height = `${h}px`;
+  ctx.setTransform(renderPixelRatio, 0, 0, renderPixelRatio, 0, 0);
+
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+
+function requestGamePointerLock() {
+  if (!gameStarted || settingsOpen || testOpen || document.pointerLockElement === canvas) return;
+
+  try {
+    const result = canvas.requestPointerLock();
+    if (result && typeof result.catch === "function") result.catch(() => {});
+  } catch {
+    // Some browsers block pointer lock from local files or embedded previews. The game can still start.
+  }
 }
 
 function getStoredDay() {
@@ -163,12 +439,15 @@ function saveProgress() {
   localStorage.setItem("mta_crafted", JSON.stringify(crafted));
   localStorage.setItem("mta_collected_resources", JSON.stringify(collectedResources));
   localStorage.setItem("mta_explored_tiles", JSON.stringify(exploredTiles));
+  localStorage.setItem("mta_door_states", JSON.stringify(doorStates));
 }
 
 function normalizeCraftedProgress() {
   crafted.boots = crafted.boots === true ? 1 : clamp(Number(crafted.boots) || 0, 0, CRAFT_COSTS.boots.length);
   crafted.marker = crafted.marker === true ? 1 : clamp(Number(crafted.marker) || 0, 0, CRAFT_COSTS.marker.length);
   crafted.lantern = crafted.lantern === true;
+  crafted.portableWorkbench = crafted.portableWorkbench === true || crafted.portableBench === true;
+  delete crafted.portableBench;
   crafted.map = true;
 }
 
@@ -178,17 +457,20 @@ function loadProgress() {
     const craft = JSON.parse(localStorage.getItem("mta_crafted") || "null");
     const collected = JSON.parse(localStorage.getItem("mta_collected_resources") || "null");
     const explored = JSON.parse(localStorage.getItem("mta_explored_tiles") || "null");
+    const doors = JSON.parse(localStorage.getItem("mta_door_states") || "null");
 
     if (inv) inventory = { ...inventory, ...inv };
     if (craft) crafted = { ...crafted, ...craft };
     if (collected) collectedResources = collected;
     if (explored) exploredTiles = explored;
+    if (doors && typeof doors === "object") doorStates = doors;
     normalizeCraftedProgress();
   } catch {
     inventory = { wood: 0, stone: 0, crystal: 0 };
     collectedResources = {};
     exploredTiles = {};
-    crafted = { boots: 0, lantern: false, map: true, marker: 0 };
+    doorStates = {};
+    crafted = { boots: 0, lantern: false, map: true, marker: 0, portableWorkbench: false };
   }
 }
 
@@ -260,7 +542,7 @@ function closeSettings() {
   settingsScreen.classList.add("hidden");
   updateSettingsUI();
 
-  if (gameStarted) canvas.requestPointerLock();
+  requestGamePointerLock();
 }
 
 function resetGameProgress() {
@@ -269,6 +551,7 @@ function resetGameProgress() {
   localStorage.removeItem("mta_crafted");
   localStorage.removeItem("mta_collected_resources");
   localStorage.removeItem("mta_explored_tiles");
+  localStorage.removeItem("mta_door_states");
 
   day = getStoredDay();
   mazeSeed = getDailySeed(day);
@@ -279,7 +562,8 @@ function resetGameProgress() {
   inventory = { wood: 0, stone: 0, crystal: 0 };
   collectedResources = {};
   exploredTiles = {};
-  crafted = { boots: 0, lantern: false, map: true, marker: 0 };
+  doorStates = {};
+  crafted = { boots: 0, lantern: false, map: true, marker: 0, portableWorkbench: false };
 
   generateMaze();
   saveProgress();
@@ -293,6 +577,7 @@ function syncTestPanel() {
   testBoots.value = String(getUpgradeLevel("boots"));
   testMarker.value = String(getUpgradeLevel("marker"));
   testLantern.checked = crafted.lantern;
+  if (testPortableWorkbench) testPortableWorkbench.checked = crafted.portableWorkbench;
 }
 
 function openTestPanel() {
@@ -312,7 +597,7 @@ function closeTestPanel() {
   testOpen = false;
   testPanel.classList.add("hidden");
 
-  if (gameStarted && !settingsOpen) canvas.requestPointerLock();
+  if (gameStarted && !settingsOpen) requestGamePointerLock();
 }
 
 function readTestNumber(input, min, max) {
@@ -327,10 +612,12 @@ function applyTestValues() {
   crafted.boots = readTestNumber(testBoots, 0, CRAFT_COSTS.boots.length);
   crafted.marker = readTestNumber(testMarker, 0, CRAFT_COSTS.marker.length);
   crafted.lantern = testLantern.checked;
+  crafted.portableWorkbench = testPortableWorkbench ? testPortableWorkbench.checked : crafted.portableWorkbench;
   crafted.map = true;
 
   saveProgress();
   syncTestPanel();
+  updateRenderSettings(true);
   showMessage("테스트 값 적용");
 }
 
@@ -387,20 +674,67 @@ function updateMessage() {
   }
 }
 
-function isWalkable(tx, ty) {
-  if (tx < 0 || tx >= mapW || ty < 0 || ty >= mapH) return false;
+function getDoorStatesForDay() {
+  const key = String(day);
+
+  if (!doorStates[key] || Array.isArray(doorStates[key]) || typeof doorStates[key] !== "object") {
+    doorStates[key] = {};
+  }
+
+  return doorStates[key];
+}
+
+function isDoorOpen(tx, ty) {
+  return getDoorStatesForDay()[getResourceKey(tx, ty)] === true;
+}
+
+function setDoorOpen(tx, ty, open) {
+  const doors = getDoorStatesForDay();
+  const key = getResourceKey(tx, ty);
+
+  if (open) doors[key] = true;
+  else delete doors[key];
+}
+
+function isSolidTile(tx, ty) {
+  if (tx < 0 || tx >= mapW || ty < 0 || ty >= mapH) return true;
 
   const tile = level[ty][tx];
 
-  return (
-    tile === TILE.EMPTY ||
-    tile === TILE.EXIT ||
-    tile === TILE.WOOD ||
-    tile === TILE.STONE ||
-    tile === TILE.CRYSTAL ||
-    tile === TILE.WORKBENCH ||
-    tile === TILE.STORAGE
-  );
+  return tile === TILE.WALL || (tile === TILE.MAZE_DOOR && !isDoorOpen(tx, ty));
+}
+
+function isWalkable(tx, ty) {
+  if (tx < 0 || tx >= mapW || ty < 0 || ty >= mapH) return false;
+  return !isSolidTile(tx, ty);
+}
+
+function circleOverlapsTile(px, py, tx, ty, radius) {
+  const closestX = clamp(px, tx, tx + 1);
+  const closestY = clamp(py, ty, ty + 1);
+  return Math.hypot(px - closestX, py - closestY) < radius;
+}
+
+function canOccupyPosition(px, py) {
+  const radius = CONFIG.playerRadius;
+  const minTx = Math.floor(px - radius);
+  const maxTx = Math.floor(px + radius);
+  const minTy = Math.floor(py - radius);
+  const maxTy = Math.floor(py + radius);
+
+  for (let ty = minTy; ty <= maxTy; ty++) {
+    for (let tx = minTx; tx <= maxTx; tx++) {
+      if (isSolidTile(tx, ty) && circleOverlapsTile(px, py, tx, ty, radius)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function wouldDoorBlockPlayer(tx, ty) {
+  return circleOverlapsTile(x, y, tx, ty, CONFIG.playerRadius + 0.06);
 }
 
 function getCurrentFov() {
@@ -427,7 +761,7 @@ function updateSceneFromPosition() {
 
   scene = nextScene;
 
-  if (scene !== "base") {
+  if (!canUseWorkbench()) {
     showCraft = false;
   }
 }
@@ -551,14 +885,24 @@ function revealAroundPlayer() {
 }
 
 function getTileAhead() {
-  const tx = Math.floor(x + cosd(dir) * CONFIG.interactDistance);
-  const ty = Math.floor(y + sind(dir) * CONFIG.interactDistance);
+  const maxDist = CONFIG.interactDistance + 0.35;
+  let last = { tx: Math.floor(x), ty: Math.floor(y), tile: level[Math.floor(y)]?.[Math.floor(x)] ?? TILE.EMPTY };
 
-  if (tx < 0 || tx >= mapW || ty < 0 || ty >= mapH) {
-    return { tx, ty, tile: TILE.WALL };
+  for (let dist = 0.28; dist <= maxDist; dist += 0.08) {
+    const tx = Math.floor(x + cosd(dir) * dist);
+    const ty = Math.floor(y + sind(dir) * dist);
+
+    if (tx < 0 || tx >= mapW || ty < 0 || ty >= mapH) {
+      return { tx, ty, tile: TILE.WALL };
+    }
+
+    const tile = level[ty][tx];
+    last = { tx, ty, tile };
+
+    if (tile !== TILE.EMPTY) return last;
   }
 
-  return { tx, ty, tile: level[ty][tx] };
+  return last;
 }
 
 function generateMaze() {
@@ -637,8 +981,11 @@ function generateMaze() {
   x = centralBaseSpawn.x;
   y = centralBaseSpawn.y;
   dir = centralBaseSpawn.dir;
+  pitch = 0;
   updateSceneFromPosition();
   revealAroundPlayer();
+  rebuildWorld();
+  syncCamera();
 }
 
 function carveCentralBaseInMaze() {
@@ -847,6 +1194,7 @@ function updateGathering() {
   markResourceCollected(gathering.tx, gathering.ty);
   level[gathering.ty][gathering.tx] = TILE.EMPTY;
   gathering = null;
+  rebuildWorld();
   saveProgress();
 }
 
@@ -854,8 +1202,17 @@ function interact() {
   const target = getTileAhead();
 
   if (target.tile === TILE.MAZE_DOOR) {
-    level[target.ty][target.tx] = TILE.EMPTY;
-    showMessage("문을 열었습니다.");
+    const open = isDoorOpen(target.tx, target.ty);
+
+    if (open && wouldDoorBlockPlayer(target.tx, target.ty)) {
+      showMessage("문 사이에서 조금 벗어난 뒤 닫을 수 있습니다.");
+      return;
+    }
+
+    setDoorOpen(target.tx, target.ty, !open);
+    setDoorVisualTarget(target.tx, target.ty);
+    saveProgress();
+    showMessage(open ? "문을 닫았습니다." : "문을 열었습니다.");
     return;
   }
 
@@ -881,6 +1238,10 @@ function interact() {
   }
 
   showMessage("상호작용할 대상이 없습니다.");
+}
+
+function canUseWorkbench() {
+  return scene === "base" || crafted.portableWorkbench === true;
 }
 
 function getUpgradeLevel(item) {
@@ -923,12 +1284,13 @@ function canCraft(item) {
   if (item === "boots") return hasMaterials(getNextUpgradeCost("boots"));
   if (item === "lantern") return inventory.wood >= 2 && inventory.crystal >= 2 && !crafted.lantern;
   if (item === "marker") return crafted.map && hasMaterials(getNextUpgradeCost("marker"));
+  if (item === "portableWorkbench") return !crafted.portableWorkbench && hasMaterials(CRAFT_COSTS.portableWorkbench);
   return false;
 }
 
 function craft(item) {
-  if (scene !== "base") {
-    showMessage("제작은 메인공간에서만 가능합니다.");
+  if (!canUseWorkbench()) {
+    showMessage("제작하려면 메인공간 작업대나 이동식 제작대가 필요합니다.");
     return;
   }
 
@@ -945,6 +1307,7 @@ function craft(item) {
     inventory.crystal -= 2;
     crafted.lantern = true;
     saveProgress();
+    updateRenderSettings(true);
     showMessage("랜턴 제작 완료. 시야가 넓어집니다.");
     return;
   }
@@ -957,12 +1320,20 @@ function craft(item) {
     return;
   }
 
+  if (item === "portableWorkbench" && canCraft("portableWorkbench")) {
+    spendMaterials(CRAFT_COSTS.portableWorkbench);
+    crafted.portableWorkbench = true;
+    saveProgress();
+    showMessage("이동식 제작대 제작 완료. 이제 밖에서도 C로 제작할 수 있습니다.");
+    return;
+  }
+
   showMessage("재료가 부족하거나 제작 조건을 만족하지 못했습니다.");
 }
 
 function movePlayer(nx, ny) {
-  if (isWalkable(Math.floor(nx), Math.floor(y))) x = nx;
-  if (isWalkable(Math.floor(x), Math.floor(ny))) y = ny;
+  if (canOccupyPosition(nx, y)) x = nx;
+  if (canOccupyPosition(x, ny)) y = ny;
 }
 
 function updateMovement() {
@@ -999,55 +1370,306 @@ function update() {
   if (!gameStarted || settingsOpen || testOpen) return;
 
   if (!mapOpen && !gathering) {
-    dir += mouse.dx * mouseSensitivity * CONFIG.rotSpeed * 180 / Math.PI;
+    const lookScale = mouseSensitivity * CONFIG.rotSpeed * 180 / Math.PI;
+    dir += mouse.dx * lookScale;
+    pitch = clamp(pitch - mouse.dy * lookScale, -72, 72);
   }
 
   mouse.dx = 0;
+  mouse.dy = 0;
 
   if (gathering) updateGathering();
   else updateMovement();
 
+  updateDoorAnimations();
   updateSceneFromPosition();
   if (revealAroundPlayer()) saveProgress();
   updateMessage();
 }
 
-function castRay(angle, maxDepth) {
-  let rayX = x;
-  let rayY = y;
-  let dist = 0;
+function clearWorld() {
+  doorVisuals.clear();
+  if (!worldRoot) return;
 
-  while (dist < maxDepth) {
-    rayX += cosd(angle) * 0.025;
-    rayY += sind(angle) * 0.025;
-    dist += 0.025;
+  worldRoot.traverse((object) => {
+    if ((object.isMesh || object.isInstancedMesh) && object.geometry) {
+      object.geometry.dispose();
+    }
+  });
 
-    const tx = Math.floor(rayX);
-    const ty = Math.floor(rayY);
+  scene3d.remove(worldRoot);
+  worldRoot = null;
+}
 
-    if (tx < 0 || tx >= mapW || ty < 0 || ty >= mapH) {
-      return { dist, tile: TILE.WALL };
+function addInstancedTiles(tiles, geometry, material, yPos, rotationY = 0) {
+  if (tiles.length === 0) {
+    geometry.dispose();
+    return null;
+  }
+
+  const mesh = new THREE.InstancedMesh(geometry, material, tiles.length);
+  tempEuler.set(0, rotationY, 0);
+  tempQuaternion.setFromEuler(tempEuler);
+  tempScale.set(1, 1, 1);
+
+  let minX = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxZ = -Infinity;
+
+  for (let i = 0; i < tiles.length; i++) {
+    const tile = tiles[i];
+    tempPosition.set(tile.x + 0.5, yPos, tile.y + 0.5);
+    tempMatrix.compose(tempPosition, tempQuaternion, tempScale);
+    mesh.setMatrixAt(i, tempMatrix);
+
+    if (tile.x < minX) minX = tile.x;
+    if (tile.y < minZ) minZ = tile.y;
+    if (tile.x > maxX) maxX = tile.x;
+    if (tile.y > maxZ) maxZ = tile.y;
+  }
+
+  mesh.instanceMatrix.needsUpdate = true;
+
+  if (mesh.geometry.computeBoundingSphere) {
+    const center = new THREE.Vector3((minX + maxX + 1) / 2, yPos, (minZ + maxZ + 1) / 2);
+    const dx = maxX - minX + 1;
+    const dz = maxZ - minZ + 1;
+    const radius = Math.sqrt(dx * dx + dz * dz) * 0.5 + WALL_HEIGHT;
+    mesh.geometry.boundingSphere = new THREE.Sphere(center, radius);
+  }
+
+  // InstancedMesh는 기본 bounding sphere가 원점 기준이라 큰 맵에서는 벽이 통째로 잘릴 수 있다.
+  // 벽/자원 오브젝트가 사라지지 않도록 컬링을 끈다.
+  mesh.frustumCulled = false;
+  worldRoot.add(mesh);
+  return mesh;
+}
+
+
+function addDoorBox(group, width, height, depth, material, px, py, pz) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+  mesh.position.set(px, py, pz);
+  group.add(mesh);
+  return mesh;
+}
+
+function addDoorHandle(group, px, py, pz) {
+  const handle = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 10), materials.doorMetal);
+  handle.position.set(px, py, pz);
+  group.add(handle);
+  return handle;
+}
+
+function isDoorPassage(tx, ty) {
+  if (tx < 0 || tx >= mapW || ty < 0 || ty >= mapH) return false;
+  const tile = level[ty][tx];
+  return tile !== TILE.WALL && tile !== TILE.MAZE_DOOR;
+}
+
+function getDoorRotationY(tx, ty) {
+  const eastWest = isDoorPassage(tx - 1, ty) || isDoorPassage(tx + 1, ty);
+  const northSouth = isDoorPassage(tx, ty - 1) || isDoorPassage(tx, ty + 1);
+
+  return eastWest && !northSouth ? Math.PI / 2 : 0;
+}
+
+function getDoorSwingDirection(tx, ty) {
+  if (centralBaseBounds) {
+    if (tx === centralBaseBounds.startX) return -1;
+    if (tx === centralBaseBounds.endX) return 1;
+    if (ty === centralBaseBounds.startY) return -1;
+    if (ty === centralBaseBounds.endY) return 1;
+  }
+
+  // 중앙 방 문이 아닌 문이 추가될 경우에도 같은 축 기준으로 안쪽처럼 보이도록 기본값을 둔다.
+  return -1;
+}
+
+function getDoorTargetRotation(tx, ty) {
+  return isDoorOpen(tx, ty) ? getDoorSwingDirection(tx, ty) * DOOR_OPEN_ANGLE : 0;
+}
+
+function setDoorVisualTarget(tx, ty) {
+  const visual = doorVisuals.get(getResourceKey(tx, ty));
+  if (!visual) return;
+
+  visual.targetRotation = getDoorTargetRotation(tx, ty);
+}
+
+function updateDoorAnimations() {
+  for (const visual of doorVisuals.values()) {
+    const current = visual.panel.rotation.y;
+    const diff = visual.targetRotation - current;
+
+    if (Math.abs(diff) < 0.001) {
+      visual.panel.rotation.y = visual.targetRotation;
+      continue;
     }
 
-    const tile = level[ty][tx];
+    visual.panel.rotation.y += diff * DOOR_ANIMATION_SPEED;
+  }
+}
 
-    if (tile !== TILE.EMPTY) {
-      return { dist, tile };
+function addDetailedDoors(tiles) {
+  for (const tile of tiles) {
+    const group = new THREE.Group();
+    const key = getResourceKey(tile.x, tile.y);
+    const targetRotation = getDoorTargetRotation(tile.x, tile.y);
+
+    group.position.set(tile.x + 0.5, 0, tile.y + 0.5);
+    group.rotation.y = getDoorRotationY(tile.x, tile.y);
+
+    addDoorBox(group, 0.14, 2.18, 0.24, materials.doorFrame, -0.54, 1.09, 0);
+    addDoorBox(group, 0.14, 2.18, 0.24, materials.doorFrame, 0.54, 1.09, 0);
+    addDoorBox(group, 1.20, 0.16, 0.24, materials.doorFrame, 0, 2.21, 0);
+    addDoorBox(group, 1.08, 0.08, 0.24, materials.doorFrame, 0, 0.04, 0);
+
+    const panel = new THREE.Group();
+    panel.position.set(-0.42, 0, 0);
+    panel.rotation.y = targetRotation;
+    group.add(panel);
+
+    doorVisuals.set(key, {
+      panel,
+      tx: tile.x,
+      ty: tile.y,
+      targetRotation
+    });
+
+    const panelX = (localX) => localX + 0.42;
+    addDoorBox(panel, 0.84, 1.92, 0.16, materials.door, panelX(0), 0.96, 0);
+
+    for (const zSide of [-0.101, 0.101]) {
+      addDoorBox(panel, 0.78, 0.07, 0.028, materials.doorMetal, panelX(0), 0.66, zSide);
+      addDoorBox(panel, 0.78, 0.07, 0.028, materials.doorMetal, panelX(0), 1.21, zSide);
+      addDoorBox(panel, 0.78, 0.07, 0.028, materials.doorMetal, panelX(0), 1.76, zSide);
+      addDoorBox(panel, 0.022, 1.72, 0.026, materials.doorFrame, panelX(-0.20), 1.03, zSide);
+      addDoorBox(panel, 0.022, 1.72, 0.026, materials.doorFrame, panelX(0.20), 1.03, zSide);
+      addDoorHandle(panel, panelX(0.29), 1.04, zSide * 1.28);
+    }
+
+    worldRoot.add(group);
+  }
+}
+
+function rebuildWorld() {
+  clearWorld();
+
+  worldRoot = new THREE.Group();
+  worldRoot.name = "maze-world";
+  scene3d.add(worldRoot);
+
+  floorTexture.repeat.set(Math.max(2, mapW / 4), Math.max(2, mapH / 4));
+  ceilingTexture.repeat.set(Math.max(2, mapW / 5), Math.max(2, mapH / 5));
+
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(mapW, mapH), materials.floor);
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.set(mapW / 2, FLOOR_Y, mapH / 2);
+  worldRoot.add(floor);
+
+  if (centralBaseBounds) {
+    const baseW = centralBaseBounds.endX - centralBaseBounds.startX + 1;
+    const baseH = centralBaseBounds.endY - centralBaseBounds.startY + 1;
+    const baseFloor = new THREE.Mesh(new THREE.PlaneGeometry(baseW, baseH), materials.baseFloor);
+    baseFloor.rotation.x = -Math.PI / 2;
+    baseFloor.position.set(centralBaseBounds.startX + baseW / 2, FLOOR_Y + 0.006, centralBaseBounds.startY + baseH / 2);
+    worldRoot.add(baseFloor);
+
+    const baseLight = new THREE.PointLight(0xd8bd78, 1.15, 14, 2);
+    baseLight.position.set(centralBaseBounds.startX + baseW / 2, CEILING_Y - 0.25, centralBaseBounds.startY + baseH / 2);
+    worldRoot.add(baseLight);
+  }
+
+  const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(mapW, mapH), materials.ceiling);
+  ceiling.rotation.x = Math.PI / 2;
+  ceiling.position.set(mapW / 2, CEILING_Y, mapH / 2);
+  worldRoot.add(ceiling);
+
+  const tiles = {
+    wall: [],
+    door: [],
+    wood: [],
+    stone: [],
+    crystal: [],
+    workbench: [],
+    storage: [],
+    exit: []
+  };
+
+  for (let yy = 0; yy < mapH; yy++) {
+    for (let xx = 0; xx < mapW; xx++) {
+      const tile = level[yy][xx];
+      const pos = { x: xx, y: yy };
+
+      if (tile === TILE.WALL) tiles.wall.push(pos);
+      else if (tile === TILE.MAZE_DOOR) tiles.door.push(pos);
+      else if (tile === TILE.WOOD) tiles.wood.push(pos);
+      else if (tile === TILE.STONE) tiles.stone.push(pos);
+      else if (tile === TILE.CRYSTAL) tiles.crystal.push(pos);
+      else if (tile === TILE.WORKBENCH) tiles.workbench.push(pos);
+      else if (tile === TILE.STORAGE) tiles.storage.push(pos);
+      else if (tile === TILE.EXIT) tiles.exit.push(pos);
     }
   }
 
-  return { dist: maxDepth, tile: TILE.EMPTY };
+  addInstancedTiles(tiles.wall, new THREE.BoxGeometry(1, WALL_HEIGHT, 1), materials.wall, WALL_HEIGHT / 2);
+  addInstancedTiles(tiles.wall, new THREE.BoxGeometry(1.018, 0.11, 1.018), materials.wallTrim, 0.055);
+  addInstancedTiles(tiles.wall, new THREE.BoxGeometry(1.02, 0.08, 1.02), materials.wallTrim, WALL_HEIGHT - 0.04);
+  addDetailedDoors(tiles.door);
+  addInstancedTiles(tiles.wood, new THREE.CylinderGeometry(0.18, 0.23, 0.9, 9), materials.wood, 0.45);
+  addInstancedTiles(tiles.stone, new THREE.DodecahedronGeometry(0.34, 0), materials.stone, 0.34);
+  addInstancedTiles(tiles.crystal, new THREE.OctahedronGeometry(0.42, 0), materials.crystal, 0.55);
+  addInstancedTiles(tiles.workbench, new THREE.BoxGeometry(0.86, 0.52, 0.62), materials.workbench, 0.26);
+  addInstancedTiles(tiles.storage, new THREE.BoxGeometry(0.78, 0.78, 0.78), materials.storage, 0.39);
+  addInstancedTiles(tiles.exit, new THREE.BoxGeometry(0.7, 1.55, 0.08), materials.exit, 0.78);
+}
+
+function syncCamera() {
+  const pitchForward = cosd(pitch);
+  camera.position.set(x, EYE_HEIGHT, y);
+  lookTarget.set(
+    x + cosd(dir) * pitchForward,
+    EYE_HEIGHT + sind(pitch),
+    y + sind(dir) * pitchForward
+  );
+  camera.lookAt(lookTarget);
+}
+
+function updateRenderSettings(force = false) {
+  const nextFov = getCurrentFov();
+  const baseFar = scene === "base" ? 26 : getCurrentRayDepth() + 4;
+  const nextFar = crafted.lantern ? Math.max(baseFar, 36) : baseFar;
+
+  if (force || Math.abs(camera.fov - nextFov) > 0.01 || Math.abs(camera.far - nextFar) > 0.01) {
+    camera.fov = nextFov;
+    camera.far = nextFar;
+    camera.updateProjectionMatrix();
+  }
+
+  const fogDensity = scene === "base" ? 0.022 : (crafted.lantern ? 0.032 : 0.085);
+  scene3d.fog.density = fogDensity;
+
+  eyeLight.intensity = crafted.lantern ? 2.8 : 1.5;
+  eyeLight.distance = crafted.lantern ? 24 : 9.5;
+  ambientLight.intensity = scene === "base" ? 0.76 : (crafted.lantern ? 0.56 : 0.48);
+  hemiLight.intensity = scene === "base" ? 0.45 : 0.3;
 }
 
 function draw() {
-  const w = canvas.width;
-  const h = canvas.height;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
 
-  ctx.fillStyle = "#101010";
-  ctx.fillRect(0, 0, w, h);
+  syncCamera();
+  updateRenderSettings();
+  renderer.render(scene3d, camera);
 
-  drawWorld(w, h);
+  ctx.clearRect(0, 0, w, h);
+
   drawVisionMask(w, h);
+
+  if (!gameStarted) return;
+
   drawHUD(w, h);
   if (getUpgradeLevel("marker") >= 2 && !mapOpen) drawMiniMap(w, h);
 
@@ -1055,41 +1677,11 @@ function draw() {
   if (showCraft) drawCraftPanel(w, h);
 }
 
-function drawWorld(w, h) {
-  const centerY = h / 2;
-  const fov = getCurrentFov();
-  const rayDepth = getCurrentRayDepth();
-
-  ctx.fillStyle = "#171717";
-  ctx.fillRect(0, 0, w, centerY);
-
-  ctx.fillStyle = "#1f1e1b";
-  ctx.fillRect(0, centerY, w, h - centerY);
-
-  const sliceW = w / CONFIG.rayCount;
-
-  for (let i = 0; i < CONFIG.rayCount; i++) {
-    const angle = dir - fov / 2 + (i / CONFIG.rayCount) * fov;
-    const hit = castRay(angle, rayDepth);
-
-    let corrected = hit.dist * cosd(angle - dir);
-    corrected = Math.max(corrected, 0.1);
-
-    const wallH = h / corrected;
-    const top = centerY - wallH / 2;
-    const falloff = crafted.lantern ? 14 : 25;
-    const shade = clamp(210 - corrected * falloff, 26, 210);
-
-    ctx.fillStyle = getWallColor(hit.tile, shade);
-    ctx.fillRect(i * sliceW - 0.5, top, sliceW + 1, wallH);
-  }
-}
-
 function drawVisionMask(w, h) {
-  const outer = Math.max(w, h) * (crafted.lantern ? 0.86 : 0.44);
-  const inner = Math.max(w, h) * (crafted.lantern ? 0.24 : 0.09);
-  const edgeDarkness = crafted.lantern ? 0.44 : 0.92;
-  const midDarkness = crafted.lantern ? 0.1 : 0.42;
+  const outer = Math.max(w, h) * (crafted.lantern ? 0.98 : 0.58);
+  const inner = Math.max(w, h) * (crafted.lantern ? 0.26 : 0.12);
+  const edgeDarkness = crafted.lantern ? 0.34 : 0.7;
+  const midDarkness = crafted.lantern ? 0.06 : 0.26;
 
   ctx.save();
   ctx.translate(w / 2, h / 2);
@@ -1104,18 +1696,6 @@ function drawVisionMask(w, h) {
   ctx.fillStyle = gradient;
   ctx.fillRect(-w, -h, w * 2, h * 2);
   ctx.restore();
-}
-
-function getWallColor(tile, shade) {
-  if (tile === TILE.WALL) return `rgb(${shade}, ${shade}, ${shade})`;
-  if (tile === TILE.WOOD) return `rgb(${Math.floor(shade * 0.75)}, ${Math.floor(shade * 0.52)}, ${Math.floor(shade * 0.28)})`;
-  if (tile === TILE.STONE) return `rgb(${Math.floor(shade * 0.58)}, ${Math.floor(shade * 0.58)}, ${Math.floor(shade * 0.62)})`;
-  if (tile === TILE.CRYSTAL) return `rgb(${Math.floor(shade * 0.55)}, ${Math.floor(shade * 0.78)}, ${shade})`;
-  if (tile === TILE.MAZE_DOOR) return `rgb(${Math.floor(shade * 0.62)}, ${Math.floor(shade * 0.38)}, ${Math.floor(shade * 0.18)})`;
-  if (tile === TILE.EXIT) return `rgb(${shade}, ${Math.floor(shade * 0.58)}, ${Math.floor(shade * 0.44)})`;
-  if (tile === TILE.WORKBENCH) return `rgb(${Math.floor(shade * 0.8)}, ${Math.floor(shade * 0.62)}, ${Math.floor(shade * 0.36)})`;
-  if (tile === TILE.STORAGE) return `rgb(${Math.floor(shade * 0.55)}, ${Math.floor(shade * 0.66)}, ${Math.floor(shade * 0.8)})`;
-  return `rgb(${shade}, ${shade}, ${shade})`;
 }
 
 function roundedRectPath(x0, y0, w0, h0, r) {
@@ -1185,7 +1765,7 @@ function drawHUD(w, h) {
   ctx.font = "11px Arial";
   ctx.fillText(gathering ? "채집 중" : `${formatKey(controls.interact)} 상호작용`, x0 + 112, y0 + 78);
   ctx.fillText(`${formatKey(controls.map)} 지도`, x0 + 214, y0 + 78);
-  ctx.fillText(`${formatKey(controls.craft)} 제작`, x0 + 310, y0 + 78);
+  ctx.fillText(canUseWorkbench() ? `${formatKey(controls.craft)} 제작` : `${formatKey(controls.craft)} 제작대 필요`, x0 + 310, y0 + 78);
   ctx.textAlign = "left";
 
   ctx.strokeStyle = "rgba(255,255,255,0.85)";
@@ -1205,7 +1785,7 @@ function drawHUD(w, h) {
   }
 
   if (target.tile !== TILE.EMPTY && target.tile !== TILE.WALL) {
-    const text = getInteractionText(target.tile);
+    const text = getInteractionText(target);
     ctx.font = "bold 14px Arial";
     const boxW = Math.max(190, ctx.measureText(text).width + 46);
     const boxX = w / 2 - boxW / 2;
@@ -1241,10 +1821,14 @@ function drawGatherProgress(w, h) {
   ctx.textAlign = "left";
 }
 
-function getInteractionText(tile) {
+function getInteractionText(target) {
   const key = formatKey(controls.interact);
+  const tile = typeof target === "number" ? target : target.tile;
 
-  if (tile === TILE.MAZE_DOOR) return `${key} 문 열기`;
+  if (tile === TILE.MAZE_DOOR) {
+    return `${key} 문 ${isDoorOpen(target.tx, target.ty) ? "닫기" : "열기"}`;
+  }
+
   if (tile === TILE.WORKBENCH) return `${key} 제작대`;
   if (tile === TILE.STORAGE) return `${key} 보관함`;
   if (tile === TILE.WOOD) return `${key} 나무 채집`;
@@ -1383,15 +1967,16 @@ function drawCraftRow(x0, y0, key, title, cost, note, done) {
 
 function drawCraftPanel(w, h) {
   const boxW = 420;
-  const boxH = 274;
+  const boxH = 332;
   const x0 = w / 2 - boxW / 2;
   const y0 = 28;
+  const title = scene === "base" ? "작업대" : "이동식 제작대";
 
   drawPanel(x0, y0, boxW, boxH, 8, "rgba(19,16,12,0.88)", "rgba(224,198,142,0.2)");
 
   ctx.fillStyle = "#d8bd78";
   ctx.font = "bold 18px Arial";
-  ctx.fillText("작업대", x0 + 22, y0 + 34);
+  ctx.fillText(title, x0 + 22, y0 + 34);
 
   ctx.fillStyle = "#aaa092";
   ctx.font = "12px Arial";
@@ -1422,10 +2007,19 @@ function drawCraftPanel(w, h) {
     markerLevel >= 2 ? "미니맵 활성화" : "내 위치 표시",
     markerMax
   );
+  drawCraftRow(
+    x0 + 22,
+    y0 + 226,
+    "4",
+    "이동식 제작대",
+    formatCost(CRAFT_COSTS.portableWorkbench),
+    "밖에서도 제작 가능",
+    crafted.portableWorkbench
+  );
 
   ctx.fillStyle = "#bdbdbd";
   ctx.font = "12px Arial";
-  ctx.fillText(`${formatKey(controls.craft)} 닫기`, x0 + 22, y0 + 254);
+  ctx.fillText(`${formatKey(controls.craft)} 닫기`, x0 + 22, y0 + 312);
 }
 
 function gameLoop() {
@@ -1440,8 +2034,8 @@ startBtn.addEventListener("click", () => {
   loadProgress();
   loadSettings();
   generateMaze();
-  canvas.requestPointerLock();
-  showMessage("사방의 문을 E로 열 수 있습니다.");
+  requestGamePointerLock();
+  showMessage("문은 안쪽으로 열립니다. 이동식 제작대를 만들면 밖에서도 제작할 수 있습니다.");
 });
 
 closeSettingsBtn.addEventListener("click", closeSettings);
@@ -1472,7 +2066,9 @@ fillTestBtn.addEventListener("click", () => {
   testBoots.value = String(CRAFT_COSTS.boots.length);
   testMarker.value = String(CRAFT_COSTS.marker.length);
   testLantern.checked = true;
+  if (testPortableWorkbench) testPortableWorkbench.checked = true;
   applyTestValues();
+  showMessage("테스트 값 적용 - 이동식 제작대 포함");
 });
 
 sensitivitySlider.addEventListener("input", () => {
@@ -1489,6 +2085,9 @@ for (const button of bindButtons) {
 }
 
 window.addEventListener("resize", resizeCanvas);
+window.addEventListener("blur", () => {
+  for (const code of Object.keys(keys)) keys[code] = false;
+});
 
 window.addEventListener("keydown", (e) => {
   if (bindingAction) {
@@ -1542,15 +2141,16 @@ window.addEventListener("keydown", (e) => {
   }
 
   if (e.code === controls.craft) {
-    if (scene === "base") showCraft = !showCraft;
-    else showMessage("제작은 메인공간에서만 가능합니다.");
+    if (canUseWorkbench()) showCraft = !showCraft;
+    else showMessage("밖에서 제작하려면 이동식 제작대를 먼저 만들어야 합니다.");
     return;
   }
 
-  if (showCraft && scene === "base") {
+  if (showCraft && canUseWorkbench()) {
     if (e.code === "Digit1") craft("boots");
     if (e.code === "Digit2") craft("lantern");
     if (e.code === "Digit3") craft("marker");
+    if (e.code === "Digit4") craft("portableWorkbench");
   }
 
   keys[e.code] = true;
@@ -1563,16 +2163,16 @@ window.addEventListener("keyup", (e) => {
 window.addEventListener("mousemove", (e) => {
   if (document.pointerLockElement === canvas) {
     mouse.dx += e.movementX;
+    mouse.dy += e.movementY;
   }
 });
 
 canvas.addEventListener("click", () => {
-  if (gameStarted && !settingsOpen && document.pointerLockElement !== canvas) {
-    canvas.requestPointerLock();
-  }
+  requestGamePointerLock();
 });
 
 loadSettings();
+loadProgress();
 resizeCanvas();
 generateMaze();
 gameLoop();

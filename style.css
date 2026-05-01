@@ -9,11 +9,23 @@ html, body {
   font-family: "Trebuchet MS", Arial, "Malgun Gothic", sans-serif;
 }
 
-#game {
+#game,
+#hud {
+  position: fixed;
+  inset: 0;
   display: block;
   width: 100vw;
   height: 100vh;
+}
+
+#game {
+  z-index: 1;
   background: #11100e;
+}
+
+#hud {
+  z-index: 2;
+  pointer-events: none;
 }
 
 .screen {

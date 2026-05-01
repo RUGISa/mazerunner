@@ -3,11 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MTA</title>
+  <title>MTA - Three.js</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <canvas id="game"></canvas>
+  <canvas id="hud"></canvas>
 
   <div id="menu" class="screen">
     <div class="panel">
@@ -18,8 +19,9 @@
       </p>
       <button id="startBtn">문 앞에 서기</button>
       <div class="help">
-        WASD 이동 / 마우스 시점 / Shift 달리기<br>
-        E 상호작용 / M 지도 / C 작업대 / R 미로 변경 / ESC 설정 / = 테스트
+        WASD 이동 / 마우스 상하좌우 시점 / Shift 달리기<br>
+        E 문 열기·닫기·상호작용 / M 지도 / C 제작 / R 미로 변경 / ESC 설정 / = 테스트<br>
+        이동식 제작대를 만들면 미로 밖에서도 제작 가능 / Three.js WebGL 렌더링 버전
       </div>
     </div>
   </div>
@@ -84,6 +86,7 @@
           <label>부츠 Lv<input id="testBoots" type="number" min="0" max="3" step="1"></label>
           <label>지도 Lv<input id="testMarker" type="number" min="0" max="2" step="1"></label>
           <label class="test-check"><input id="testLantern" type="checkbox">랜턴</label>
+          <label class="test-check"><input id="testPortableWorkbench" type="checkbox">이동식 제작대</label>
         </div>
       </div>
 
@@ -96,6 +99,17 @@
 
   <div id="message"></div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    if (!window.THREE) {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"><\/script>');
+    }
+  </script>
+  <script>
+    if (!window.THREE) {
+      document.write('<script src="https://unpkg.com/three@0.128.0/build/three.min.js"><\/script>');
+    }
+  </script>
   <script src="script.js"></script>
 </body>
 </html>
