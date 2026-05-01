@@ -20,8 +20,8 @@
       <button id="startBtn">문 앞에 서기</button>
       <div class="help">
         WASD 이동 / 마우스 상하좌우 시점 / Shift 달리기<br>
-        E 문 열기·닫기·상호작용 / M 지도 / C 제작 / R 미로 변경 / ESC 설정 / = 테스트<br>
-        이동식 제작대를 만들면 미로 밖에서도 제작 가능 / Three.js WebGL 렌더링 버전
+        E 문 열기·닫기·상호작용 / M 지도 / C 제작 / R 미로 변경 / ESC 설정 / = 디버그<br>
+        기력·정신력·빛 관리 / 기본 재료로 제작대를 먼저 설치
       </div>
     </div>
   </div>
@@ -76,7 +76,10 @@
           <label>나무<input id="testWood" type="number" min="0" max="999" step="1"></label>
           <label>돌<input id="testStone" type="number" min="0" max="999" step="1"></label>
           <label>수정<input id="testCrystal" type="number" min="0" max="999" step="1"></label>
+          <label>석탄<input id="testCoal" type="number" min="0" max="999" step="1"></label>
           <label>기력<input id="testStamina" type="number" min="0" max="100" step="1"></label>
+          <label>정신력<input id="testSanity" type="number" min="0" max="100" step="1"></label>
+          <label>빛<input id="testLight" type="number" min="0" max="100" step="1"></label>
         </div>
       </div>
 
@@ -85,8 +88,10 @@
         <div class="test-grid">
           <label>부츠 Lv<input id="testBoots" type="number" min="0" max="3" step="1"></label>
           <label>지도 Lv<input id="testMarker" type="number" min="0" max="2" step="1"></label>
-          <label class="test-check"><input id="testLantern" type="checkbox">랜턴</label>
-          <label class="test-check"><input id="testPortableWorkbench" type="checkbox">이동식 제작대</label>
+          <label class="test-check"><input id="testWorkbench" type="checkbox">제작대</label>
+          <label>이동식 Lv<input id="testPortableWorkbench" type="number" min="0" max="3" step="1"></label>
+          <label>랜턴 Lv<input id="testLantern" type="number" min="0" max="3" step="1"></label>
+          <label class="test-check"><input id="testInfiniteLantern" type="checkbox">무한 랜턴</label>
         </div>
       </div>
 

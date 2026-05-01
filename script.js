@@ -32,11 +32,16 @@ const fillTestBtn = document.getElementById("fillTestBtn");
 const testWood = document.getElementById("testWood");
 const testStone = document.getElementById("testStone");
 const testCrystal = document.getElementById("testCrystal");
+const testCoal = document.getElementById("testCoal");
 const testStamina = document.getElementById("testStamina");
+const testSanity = document.getElementById("testSanity");
+const testLight = document.getElementById("testLight");
 const testBoots = document.getElementById("testBoots");
 const testMarker = document.getElementById("testMarker");
+const testWorkbench = document.getElementById("testWorkbench");
 const testLantern = document.getElementById("testLantern");
 const testPortableWorkbench = document.getElementById("testPortableWorkbench");
+const testInfiniteLantern = document.getElementById("testInfiniteLantern");
 const sensitivitySlider = document.getElementById("sensitivitySlider");
 const sensitivityValue = document.getElementById("sensitivityValue");
 const bindButtons = Array.from(document.querySelectorAll(".bind-key"));
@@ -102,6 +107,7 @@ const materials = {
   wood: new THREE.MeshStandardMaterial({ color: 0x8f5d2d, roughness: 0.9, metalness: 0.02 }),
   stone: new THREE.MeshStandardMaterial({ color: 0x7a7d84, roughness: 0.98, metalness: 0.02 }),
   crystal: new THREE.MeshStandardMaterial({ color: 0x84c7ff, emissive: 0x246b99, emissiveIntensity: 0.7, roughness: 0.42, metalness: 0.04 }),
+  coal: new THREE.MeshStandardMaterial({ color: 0x1d1c1a, roughness: 0.92, metalness: 0.04 }),
   workbench: new THREE.MeshStandardMaterial({ color: 0x9a7040, roughness: 0.82, metalness: 0.03 }),
   storage: new THREE.MeshStandardMaterial({ color: 0x5f7186, roughness: 0.76, metalness: 0.03 }),
   exit: new THREE.MeshStandardMaterial({ color: 0xd76b51, emissive: 0x9c2a18, emissiveIntensity: 1.2, roughness: 0.45, metalness: 0.02, transparent: true, opacity: 0.84 })
@@ -129,6 +135,7 @@ const TILE = {
   WOOD: 3,
   STONE: 4,
   CRYSTAL: 5,
+  COAL: 6,
   WORKBENCH: 7,
   STORAGE: 8,
   MAZE_DOOR: 9
@@ -137,13 +144,15 @@ const TILE = {
 const RESOURCE_TYPES = {
   [TILE.WOOD]: "wood",
   [TILE.STONE]: "stone",
-  [TILE.CRYSTAL]: "crystal"
+  [TILE.CRYSTAL]: "crystal",
+  [TILE.COAL]: "coal"
 };
 
 const RESOURCE_NAMES = {
   wood: "나무",
   stone: "돌",
-  crystal: "수정"
+  crystal: "수정",
+  coal: "석탄"
 };
 
 const CRAFT_COSTS = {
@@ -156,7 +165,18 @@ const CRAFT_COSTS = {
     { stone: 2, crystal: 1 },
     { stone: 4, crystal: 2 }
   ],
-  portableWorkbench: { wood: 4, stone: 2 }
+  workbench: { wood: 3, stone: 2, coal: 1 },
+  portableWorkbench: [
+    { wood: 2, stone: 1, crystal: 1 },
+    { wood: 4, stone: 3, coal: 2 },
+    { wood: 6, stone: 5, crystal: 2, coal: 4 }
+  ],
+  lantern: [
+    { wood: 2, crystal: 2, coal: 1 },
+    { crystal: 2, coal: 3 },
+    { crystal: 4, coal: 5 }
+  ],
+  torch: { wood: 1, coal: 1 }
 };
 
 const CONFIG = {
@@ -172,10 +192,17 @@ const CONFIG = {
   resourceDensity: 0.055,
   interactDistance: 1.25,
   playerRadius: 0.30,
+  baseLightRecover: 0.18,
+  mazeLightDecay: 0.026,
+  sanityDrainAtDark: 0.055,
+  sanityRecoverInBase: 0.035,
+  torchLightGain: 35,
+  lanternFuelIntervals: [0, 1500, 2400, 3600],
   gather: {
     wood: { duration: 72, staminaCost: 10, minStamina: 8 },
     stone: { duration: 108, staminaCost: 16, minStamina: 12 },
-    crystal: { duration: 144, staminaCost: 24, minStamina: 16 }
+    crystal: { duration: 144, staminaCost: 24, minStamina: 16 },
+    coal: { duration: 90, staminaCost: 12, minStamina: 10 }
   }
 };
 
@@ -206,12 +233,20 @@ let mouseSensitivity = 1;
 
 let stamina = 100;
 let staminaMax = 100;
+let sanity = 100;
+let sanityMax = 100;
+let lightPower = 60;
+let lightMax = 100;
+let lanternFuelTimer = 0;
+let gameOver = false;
+let debugInfiniteLantern = false;
 let gathering = null;
 
 let inventory = {
   wood: 0,
   stone: 0,
-  crystal: 0
+  crystal: 0,
+  coal: 0
 };
 
 let collectedResources = {};
@@ -221,9 +256,11 @@ let doorStates = {};
 let crafted = {
   boots: 0,
   lantern: false,
+  lanternLevel: 0,
   map: true,
   marker: 0,
-  portableWorkbench: false
+  workbench: false,
+  portableWorkbench: 0
 };
 
 let messageTimer = 0;
@@ -440,14 +477,25 @@ function saveProgress() {
   localStorage.setItem("mta_collected_resources", JSON.stringify(collectedResources));
   localStorage.setItem("mta_explored_tiles", JSON.stringify(exploredTiles));
   localStorage.setItem("mta_door_states", JSON.stringify(doorStates));
+  localStorage.setItem("mta_survival", JSON.stringify({ sanity, lightPower, lanternFuelTimer, debugInfiniteLantern }));
 }
 
 function normalizeCraftedProgress() {
   crafted.boots = crafted.boots === true ? 1 : clamp(Number(crafted.boots) || 0, 0, CRAFT_COSTS.boots.length);
   crafted.marker = crafted.marker === true ? 1 : clamp(Number(crafted.marker) || 0, 0, CRAFT_COSTS.marker.length);
-  crafted.lantern = crafted.lantern === true;
-  crafted.portableWorkbench = crafted.portableWorkbench === true || crafted.portableBench === true;
+
+  const oldLantern = crafted.lantern === true ? 1 : 0;
+  crafted.lanternLevel = clamp(Number(crafted.lanternLevel) || oldLantern, 0, CRAFT_COSTS.lantern.length);
+  crafted.lantern = crafted.lanternLevel > 0;
+
+  const oldPortable = crafted.portableWorkbench === true || crafted.portableBench === true ? 1 : 0;
+  crafted.portableWorkbench = clamp(Number(crafted.portableWorkbench) || oldPortable, 0, CRAFT_COSTS.portableWorkbench.length);
   delete crafted.portableBench;
+
+  // v10부터 이동식 제작대와 고정 제작대는 완전히 분리한다.
+  // 이전 저장의 hasWorkbench만 고정 제작대로 인정하고, portableWorkbench는 휴대용 단계로만 유지한다.
+  crafted.workbench = crafted.workbench === true || crafted.hasWorkbench === true;
+  delete crafted.hasWorkbench;
   crafted.map = true;
 }
 
@@ -458,19 +506,27 @@ function loadProgress() {
     const collected = JSON.parse(localStorage.getItem("mta_collected_resources") || "null");
     const explored = JSON.parse(localStorage.getItem("mta_explored_tiles") || "null");
     const doors = JSON.parse(localStorage.getItem("mta_door_states") || "null");
+    const survival = JSON.parse(localStorage.getItem("mta_survival") || "null");
 
     if (inv) inventory = { ...inventory, ...inv };
     if (craft) crafted = { ...crafted, ...craft };
     if (collected) collectedResources = collected;
     if (explored) exploredTiles = explored;
     if (doors && typeof doors === "object") doorStates = doors;
+    if (survival && typeof survival === "object") {
+      sanity = clamp(Number(survival.sanity) || sanity, 0, sanityMax);
+      lightPower = clamp(Number(survival.lightPower) || lightPower, 0, lightMax);
+      lanternFuelTimer = Math.max(0, Number(survival.lanternFuelTimer) || 0);
+      debugInfiniteLantern = survival.debugInfiniteLantern === true;
+    }
+    inventory.coal = Number(inventory.coal) || 0;
     normalizeCraftedProgress();
   } catch {
-    inventory = { wood: 0, stone: 0, crystal: 0 };
+    inventory = { wood: 0, stone: 0, crystal: 0, coal: 0 };
     collectedResources = {};
     exploredTiles = {};
     doorStates = {};
-    crafted = { boots: 0, lantern: false, map: true, marker: 0, portableWorkbench: false };
+    crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, portableWorkbench: 0 };
   }
 }
 
@@ -552,6 +608,7 @@ function resetGameProgress() {
   localStorage.removeItem("mta_collected_resources");
   localStorage.removeItem("mta_explored_tiles");
   localStorage.removeItem("mta_door_states");
+  localStorage.removeItem("mta_survival");
 
   day = getStoredDay();
   mazeSeed = getDailySeed(day);
@@ -559,11 +616,15 @@ function resetGameProgress() {
   showCraft = false;
   gathering = null;
   stamina = staminaMax;
-  inventory = { wood: 0, stone: 0, crystal: 0 };
+  sanity = sanityMax;
+  lightPower = 60;
+  lanternFuelTimer = 0;
+  gameOver = false;
+  inventory = { wood: 0, stone: 0, crystal: 0, coal: 0 };
   collectedResources = {};
   exploredTiles = {};
   doorStates = {};
-  crafted = { boots: 0, lantern: false, map: true, marker: 0, portableWorkbench: false };
+  crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, portableWorkbench: 0 };
 
   generateMaze();
   saveProgress();
@@ -573,11 +634,16 @@ function syncTestPanel() {
   testWood.value = String(inventory.wood);
   testStone.value = String(inventory.stone);
   testCrystal.value = String(inventory.crystal);
+  if (testCoal) testCoal.value = String(inventory.coal || 0);
   testStamina.value = String(Math.round(stamina));
+  if (testSanity) testSanity.value = String(Math.round(sanity));
+  if (testLight) testLight.value = String(Math.round(lightPower));
   testBoots.value = String(getUpgradeLevel("boots"));
   testMarker.value = String(getUpgradeLevel("marker"));
-  testLantern.checked = crafted.lantern;
-  if (testPortableWorkbench) testPortableWorkbench.checked = crafted.portableWorkbench;
+  if (testWorkbench) testWorkbench.checked = crafted.workbench === true;
+  if (testLantern) testLantern.value = String(crafted.lanternLevel || 0);
+  if (testPortableWorkbench) testPortableWorkbench.value = String(getPortableWorkbenchLevel());
+  if (testInfiniteLantern) testInfiniteLantern.checked = debugInfiniteLantern;
 }
 
 function openTestPanel() {
@@ -608,13 +674,21 @@ function applyTestValues() {
   inventory.wood = readTestNumber(testWood, 0, 999);
   inventory.stone = readTestNumber(testStone, 0, 999);
   inventory.crystal = readTestNumber(testCrystal, 0, 999);
+  inventory.coal = testCoal ? readTestNumber(testCoal, 0, 999) : (inventory.coal || 0);
   stamina = readTestNumber(testStamina, 0, staminaMax);
+  sanity = testSanity ? readTestNumber(testSanity, 0, sanityMax) : sanity;
+  lightPower = testLight ? readTestNumber(testLight, 0, lightMax) : lightPower;
   crafted.boots = readTestNumber(testBoots, 0, CRAFT_COSTS.boots.length);
   crafted.marker = readTestNumber(testMarker, 0, CRAFT_COSTS.marker.length);
-  crafted.lantern = testLantern.checked;
-  crafted.portableWorkbench = testPortableWorkbench ? testPortableWorkbench.checked : crafted.portableWorkbench;
+  crafted.workbench = testWorkbench ? testWorkbench.checked : crafted.workbench;
+  crafted.lanternLevel = testLantern ? readTestNumber(testLantern, 0, CRAFT_COSTS.lantern.length) : crafted.lanternLevel;
+  crafted.lantern = crafted.lanternLevel > 0;
+  crafted.portableWorkbench = testPortableWorkbench ? readTestNumber(testPortableWorkbench, 0, CRAFT_COSTS.portableWorkbench.length) : crafted.portableWorkbench;
+  debugInfiniteLantern = testInfiniteLantern ? testInfiniteLantern.checked : debugInfiniteLantern;
   crafted.map = true;
 
+  installBaseWorkbenchIfUnlocked();
+  rebuildWorld();
   saveProgress();
   syncTestPanel();
   updateRenderSettings(true);
@@ -737,12 +811,28 @@ function wouldDoorBlockPlayer(tx, ty) {
   return circleOverlapsTile(x, y, tx, ty, CONFIG.playerRadius + 0.06);
 }
 
+function getLightRatio() {
+  return clamp(lightPower / lightMax, 0, 1);
+}
+
+function getPortableWorkbenchLevel() {
+  return clamp(Number(crafted.portableWorkbench) || 0, 0, CRAFT_COSTS.portableWorkbench.length);
+}
+
+function getLanternLevel() {
+  return clamp(Number(crafted.lanternLevel) || 0, 0, CRAFT_COSTS.lantern.length);
+}
+
+function isLanternActive() {
+  return debugInfiniteLantern || getLanternLevel() > 0;
+}
+
 function getCurrentFov() {
-  return crafted.lantern ? CONFIG.lanternFov : CONFIG.mazeFov;
+  return CONFIG.mazeFov + (CONFIG.lanternFov - CONFIG.mazeFov) * Math.max(getLightRatio(), isLanternActive() ? 0.7 : 0);
 }
 
 function getCurrentRayDepth() {
-  return crafted.lantern ? CONFIG.lanternRayDepth : CONFIG.mazeRayDepth;
+  return CONFIG.mazeRayDepth + (CONFIG.lanternRayDepth - CONFIG.mazeRayDepth) * Math.max(getLightRatio(), isLanternActive() ? 0.7 : 0);
 }
 
 function isInsideCentralBase(tx, ty) {
@@ -758,12 +848,7 @@ function isInsideCentralBase(tx, ty) {
 
 function updateSceneFromPosition() {
   const nextScene = isInsideCentralBase(Math.floor(x), Math.floor(y)) ? "base" : "maze";
-
   scene = nextScene;
-
-  if (!canUseWorkbench()) {
-    showCraft = false;
-  }
 }
 
 function getResourceKey(tx, ty) {
@@ -868,7 +953,7 @@ function revealAroundPlayer() {
     return revealCentralBaseOnMap();
   }
 
-  const radius = crafted.lantern ? 4 : 2;
+  const radius = lightPower > 60 || isLanternActive() ? 4 : 2;
   const px = Math.floor(x);
   const py = Math.floor(y);
   let changed = false;
@@ -988,6 +1073,26 @@ function generateMaze() {
   syncCamera();
 }
 
+function getBaseWorkbenchTile() {
+  if (!centralBaseBounds) return null;
+
+  const centerX = Math.floor((centralBaseBounds.startX + centralBaseBounds.endX) / 2);
+  const centerY = Math.floor((centralBaseBounds.startY + centralBaseBounds.endY) / 2);
+
+  return { x: centralBaseBounds.startX + 1, y: centerY - 2 };
+}
+
+function installBaseWorkbenchIfUnlocked() {
+  if (crafted.workbench !== true) return false;
+
+  const pos = getBaseWorkbenchTile();
+  if (!pos) return false;
+  if (pos.x < 0 || pos.x >= mapW || pos.y < 0 || pos.y >= mapH) return false;
+
+  level[pos.y][pos.x] = TILE.WORKBENCH;
+  return true;
+}
+
 function carveCentralBaseInMaze() {
   const size = CONFIG.baseSize;
   const startX = Math.floor((mapW - size) / 2);
@@ -1015,8 +1120,15 @@ function carveCentralBaseInMaze() {
     level[endY - 3][endX - 3] = TILE.WALL;
   }
 
-  level[centerY - 2][startX + 1] = TILE.WORKBENCH;
-  level[centerY - 2][endX - 1] = TILE.STORAGE;
+  // 튜토리얼 자원: 처음 기본 방에는 제작대/보관함 없이 재료만 놓인다.
+  // 이 네 개를 모으면 이동식 제작대 Lv1만 먼저 만들 수 있다.
+  level[centerY + 1][centerX - 2] = TILE.WOOD;
+  level[centerY + 1][centerX - 1] = TILE.WOOD;
+  level[centerY + 1][centerX + 1] = TILE.STONE;
+  level[centerY + 1][centerX + 2] = TILE.CRYSTAL;
+
+  // 고정 제작대를 따로 만든 뒤에는 기본 위치에 제작대가 설치된다.
+  installBaseWorkbenchIfUnlocked();
 
   carveRingAroundCentralBase(startX, startY, endX, endY);
 
@@ -1097,10 +1209,12 @@ function placeResources(rng) {
     const pos = possible.splice(index, 1)[0];
     const roll = rng();
 
-    if (roll < 0.5) {
+    if (roll < 0.42) {
       level[pos.y][pos.x] = TILE.WOOD;
-    } else if (roll < 0.84) {
+    } else if (roll < 0.70) {
       level[pos.y][pos.x] = TILE.STONE;
+    } else if (roll < 0.86) {
+      level[pos.y][pos.x] = TILE.COAL;
     } else {
       level[pos.y][pos.x] = TILE.CRYSTAL;
     }
@@ -1217,13 +1331,18 @@ function interact() {
   }
 
   if (target.tile === TILE.WORKBENCH) {
+    if (crafted.workbench !== true) {
+      showMessage("이동식 제작대로 제작대를 만든 뒤 사용할 수 있습니다.");
+      return;
+    }
+
     showCraft = !showCraft;
-    showMessage(showCraft ? "제작창을 열었습니다." : "제작창을 닫았습니다.");
+    showMessage(showCraft ? "제작대를 열었습니다." : "제작창을 닫았습니다.");
     return;
   }
 
   if (target.tile === TILE.STORAGE) {
-    showMessage("보관함은 아직 비어 있습니다. 이후 확장 가능합니다.");
+    showMessage("보관함은 이번 튜토리얼 구조에서 사용하지 않습니다.");
     return;
   }
 
@@ -1240,8 +1359,20 @@ function interact() {
   showMessage("상호작용할 대상이 없습니다.");
 }
 
+function canOpenCraftPanel() {
+  return true;
+}
+
+function canUseMainWorkbench() {
+  return scene === "base" && crafted.workbench === true;
+}
+
+function canUsePortableWorkbench() {
+  return getPortableWorkbenchLevel() >= 1;
+}
+
 function canUseWorkbench() {
-  return scene === "base" || crafted.portableWorkbench === true;
+  return canUseMainWorkbench() || canUsePortableWorkbench() || crafted.workbench !== true;
 }
 
 function getUpgradeLevel(item) {
@@ -1258,7 +1389,8 @@ function hasMaterials(cost) {
   return (
     inventory.wood >= (cost.wood || 0) &&
     inventory.stone >= (cost.stone || 0) &&
-    inventory.crystal >= (cost.crystal || 0)
+    inventory.crystal >= (cost.crystal || 0) &&
+    (inventory.coal || 0) >= (cost.coal || 0)
   );
 }
 
@@ -1266,6 +1398,7 @@ function spendMaterials(cost) {
   inventory.wood -= cost.wood || 0;
   inventory.stone -= cost.stone || 0;
   inventory.crystal -= cost.crystal || 0;
+  inventory.coal = (inventory.coal || 0) - (cost.coal || 0);
 }
 
 function formatCost(cost) {
@@ -1276,21 +1409,85 @@ function formatCost(cost) {
   if (cost.wood) parts.push(`나무 ${cost.wood}`);
   if (cost.stone) parts.push(`돌 ${cost.stone}`);
   if (cost.crystal) parts.push(`수정 ${cost.crystal}`);
+  if (cost.coal) parts.push(`석탄 ${cost.coal}`);
 
   return parts.join(" / ");
 }
 
 function canCraft(item) {
+  const portableLevel = getPortableWorkbenchLevel();
+  const hasPortable = canUsePortableWorkbench();
+  const hasMain = canUseMainWorkbench();
+  const hasAnyWorkbench = hasMain || hasPortable;
+
+  // 첫 튜토리얼 제작: 제작대 없이도 이동식 제작대 Lv1만 만들 수 있다.
+  if (item === "portableWorkbench") {
+    const nextCost = CRAFT_COSTS.portableWorkbench[portableLevel];
+    if (!nextCost) return false;
+    if (portableLevel <= 0) return scene === "base" && hasMaterials(nextCost);
+    return hasAnyWorkbench && hasMaterials(nextCost);
+  }
+
+  // 고정 제작대는 이동식 제작대 Lv1을 만든 뒤에만 만들 수 있다.
+  if (item === "workbench") {
+    return crafted.workbench !== true && scene === "base" && portableLevel >= 1 && hasMaterials(CRAFT_COSTS.workbench);
+  }
+
+  if (!hasAnyWorkbench) return false;
+
+  if (item === "torch") return hasMaterials(CRAFT_COSTS.torch);
+  if (item === "lantern") return hasMaterials(CRAFT_COSTS.lantern[getLanternLevel()]);
+
+  if (scene !== "base" && portableLevel < 1) return false;
+
   if (item === "boots") return hasMaterials(getNextUpgradeCost("boots"));
-  if (item === "lantern") return inventory.wood >= 2 && inventory.crystal >= 2 && !crafted.lantern;
   if (item === "marker") return crafted.map && hasMaterials(getNextUpgradeCost("marker"));
-  if (item === "portableWorkbench") return !crafted.portableWorkbench && hasMaterials(CRAFT_COSTS.portableWorkbench);
   return false;
 }
 
 function craft(item) {
-  if (!canUseWorkbench()) {
-    showMessage("제작하려면 메인공간 작업대나 이동식 제작대가 필요합니다.");
+  const portableLevel = getPortableWorkbenchLevel();
+
+  if (item === "portableWorkbench" && canCraft("portableWorkbench")) {
+    spendMaterials(CRAFT_COSTS.portableWorkbench[portableLevel]);
+    crafted.portableWorkbench = portableLevel + 1;
+    saveProgress();
+    showMessage(`이동식 제작대 Lv ${crafted.portableWorkbench} 제작 완료`);
+    return;
+  }
+
+  if (item === "workbench" && canCraft("workbench")) {
+    spendMaterials(CRAFT_COSTS.workbench);
+    crafted.workbench = true;
+    installBaseWorkbenchIfUnlocked();
+    rebuildWorld();
+    saveProgress();
+    showMessage("제작대 제작 완료. 기본 위치에 설치되었습니다.");
+    return;
+  }
+
+  if (portableLevel <= 0) {
+    showMessage("튜토리얼 자원을 모아 이동식 제작대부터 만드세요.");
+    return;
+  }
+
+
+  if (item === "torch" && canCraft("torch")) {
+    spendMaterials(CRAFT_COSTS.torch);
+    lightPower = clamp(lightPower + CONFIG.torchLightGain, 0, lightMax);
+    saveProgress();
+    showMessage(`횃불 사용: 빛 +${CONFIG.torchLightGain}%`);
+    return;
+  }
+
+  if (item === "lantern" && canCraft("lantern")) {
+    spendMaterials(CRAFT_COSTS.lantern[getLanternLevel()]);
+    crafted.lanternLevel = getLanternLevel() + 1;
+    crafted.lantern = true;
+    lanternFuelTimer = 0;
+    saveProgress();
+    updateRenderSettings(true);
+    showMessage(`랜턴 Lv ${crafted.lanternLevel} 제작/강화 완료`);
     return;
   }
 
@@ -1302,16 +1499,6 @@ function craft(item) {
     return;
   }
 
-  if (item === "lantern" && canCraft("lantern")) {
-    inventory.wood -= 2;
-    inventory.crystal -= 2;
-    crafted.lantern = true;
-    saveProgress();
-    updateRenderSettings(true);
-    showMessage("랜턴 제작 완료. 시야가 넓어집니다.");
-    return;
-  }
-
   if (item === "marker" && canCraft("marker")) {
     spendMaterials(getNextUpgradeCost("marker"));
     crafted.marker = getUpgradeLevel("marker") + 1;
@@ -1320,15 +1507,7 @@ function craft(item) {
     return;
   }
 
-  if (item === "portableWorkbench" && canCraft("portableWorkbench")) {
-    spendMaterials(CRAFT_COSTS.portableWorkbench);
-    crafted.portableWorkbench = true;
-    saveProgress();
-    showMessage("이동식 제작대 제작 완료. 이제 밖에서도 C로 제작할 수 있습니다.");
-    return;
-  }
-
-  showMessage("재료가 부족하거나 제작 조건을 만족하지 못했습니다.");
+  showMessage("재료가 부족하거나 현재 제작대 단계에서 만들 수 없습니다.");
 }
 
 function movePlayer(nx, ny) {
@@ -1366,8 +1545,66 @@ function updateMovement() {
   }
 }
 
+
+function updateSurvivalSystems() {
+  if (!gameStarted || gameOver) return;
+
+  const inMaze = scene !== "base";
+  const lanternLevel = getLanternLevel();
+
+  if (debugInfiniteLantern) {
+    lightPower = lightMax;
+  } else {
+    if (inMaze && lanternLevel > 0) {
+      lanternFuelTimer--;
+      if (lanternFuelTimer <= 0) {
+        const interval = CONFIG.lanternFuelIntervals[lanternLevel] || CONFIG.lanternFuelIntervals[1];
+        if ((inventory.coal || 0) > 0) {
+          inventory.coal--;
+          lightPower = lightMax;
+          lanternFuelTimer = interval;
+          saveProgress();
+        } else {
+          lanternFuelTimer = Math.floor(interval / 3);
+        }
+      }
+    }
+
+    if (inMaze) {
+      lightPower = clamp(lightPower - CONFIG.mazeLightDecay, 0, lightMax);
+    } else {
+      lightPower = clamp(lightPower + CONFIG.baseLightRecover, 0, lightMax);
+    }
+  }
+
+  if (inMaze && lightPower <= 0) {
+    sanity = clamp(sanity - CONFIG.sanityDrainAtDark, 0, sanityMax);
+  } else if (!inMaze) {
+    sanity = clamp(sanity + CONFIG.sanityRecoverInBase, 0, sanityMax);
+  }
+
+  if (sanity <= 0) triggerGameOver();
+}
+
+function triggerGameOver() {
+  if (gameOver) return;
+  gameOver = true;
+  showCraft = false;
+  mapOpen = false;
+  gathering = null;
+  for (const code of Object.keys(keys)) keys[code] = false;
+  showMessage("정신력이 바닥났습니다. 게임이 초기화됩니다.");
+
+  setTimeout(() => {
+    resetGameProgress();
+    gameStarted = true;
+    gameOver = false;
+    showMessage("중앙 방에서 다시 시작합니다.");
+  }, 900);
+}
+
 function update() {
-  if (!gameStarted || settingsOpen || testOpen) return;
+  if (!gameStarted || settingsOpen || testOpen || gameOver) return;
 
   if (!mapOpen && !gathering) {
     const lookScale = mouseSensitivity * CONFIG.rotSpeed * 180 / Math.PI;
@@ -1383,6 +1620,7 @@ function update() {
 
   updateDoorAnimations();
   updateSceneFromPosition();
+  updateSurvivalSystems();
   if (revealAroundPlayer()) saveProgress();
   updateMessage();
 }
@@ -1592,6 +1830,7 @@ function rebuildWorld() {
     wood: [],
     stone: [],
     crystal: [],
+    coal: [],
     workbench: [],
     storage: [],
     exit: []
@@ -1607,6 +1846,7 @@ function rebuildWorld() {
       else if (tile === TILE.WOOD) tiles.wood.push(pos);
       else if (tile === TILE.STONE) tiles.stone.push(pos);
       else if (tile === TILE.CRYSTAL) tiles.crystal.push(pos);
+      else if (tile === TILE.COAL) tiles.coal.push(pos);
       else if (tile === TILE.WORKBENCH) tiles.workbench.push(pos);
       else if (tile === TILE.STORAGE) tiles.storage.push(pos);
       else if (tile === TILE.EXIT) tiles.exit.push(pos);
@@ -1620,6 +1860,7 @@ function rebuildWorld() {
   addInstancedTiles(tiles.wood, new THREE.CylinderGeometry(0.18, 0.23, 0.9, 9), materials.wood, 0.45);
   addInstancedTiles(tiles.stone, new THREE.DodecahedronGeometry(0.34, 0), materials.stone, 0.34);
   addInstancedTiles(tiles.crystal, new THREE.OctahedronGeometry(0.42, 0), materials.crystal, 0.55);
+  addInstancedTiles(tiles.coal, new THREE.DodecahedronGeometry(0.30, 0), materials.coal, 0.30);
   addInstancedTiles(tiles.workbench, new THREE.BoxGeometry(0.86, 0.52, 0.62), materials.workbench, 0.26);
   addInstancedTiles(tiles.storage, new THREE.BoxGeometry(0.78, 0.78, 0.78), materials.storage, 0.39);
   addInstancedTiles(tiles.exit, new THREE.BoxGeometry(0.7, 1.55, 0.08), materials.exit, 0.78);
@@ -1637,9 +1878,10 @@ function syncCamera() {
 }
 
 function updateRenderSettings(force = false) {
+  const lightRatio = getLightRatio();
   const nextFov = getCurrentFov();
   const baseFar = scene === "base" ? 26 : getCurrentRayDepth() + 4;
-  const nextFar = crafted.lantern ? Math.max(baseFar, 36) : baseFar;
+  const nextFar = Math.max(baseFar, 12 + lightRatio * 26);
 
   if (force || Math.abs(camera.fov - nextFov) > 0.01 || Math.abs(camera.far - nextFar) > 0.01) {
     camera.fov = nextFov;
@@ -1647,13 +1889,13 @@ function updateRenderSettings(force = false) {
     camera.updateProjectionMatrix();
   }
 
-  const fogDensity = scene === "base" ? 0.022 : (crafted.lantern ? 0.032 : 0.085);
-  scene3d.fog.density = fogDensity;
+  const fogDensity = scene === "base" ? 0.022 : 0.13 - lightRatio * 0.095;
+  scene3d.fog.density = clamp(fogDensity, 0.028, 0.13);
 
-  eyeLight.intensity = crafted.lantern ? 2.8 : 1.5;
-  eyeLight.distance = crafted.lantern ? 24 : 9.5;
-  ambientLight.intensity = scene === "base" ? 0.76 : (crafted.lantern ? 0.56 : 0.48);
-  hemiLight.intensity = scene === "base" ? 0.45 : 0.3;
+  eyeLight.intensity = 0.55 + lightRatio * 2.45;
+  eyeLight.distance = 5 + lightRatio * 21;
+  ambientLight.intensity = scene === "base" ? 0.76 : 0.25 + lightRatio * 0.36;
+  hemiLight.intensity = scene === "base" ? 0.45 : 0.18 + lightRatio * 0.22;
 }
 
 function draw() {
@@ -1678,10 +1920,11 @@ function draw() {
 }
 
 function drawVisionMask(w, h) {
-  const outer = Math.max(w, h) * (crafted.lantern ? 0.98 : 0.58);
-  const inner = Math.max(w, h) * (crafted.lantern ? 0.26 : 0.12);
-  const edgeDarkness = crafted.lantern ? 0.34 : 0.7;
-  const midDarkness = crafted.lantern ? 0.06 : 0.26;
+  const lightRatio = getLightRatio();
+  const outer = Math.max(w, h) * (0.42 + lightRatio * 0.58);
+  const inner = Math.max(w, h) * (0.07 + lightRatio * 0.21);
+  const edgeDarkness = 0.92 - lightRatio * 0.56;
+  const midDarkness = 0.46 - lightRatio * 0.36;
 
   ctx.save();
   ctx.translate(w / 2, h / 2);
@@ -1690,8 +1933,8 @@ function drawVisionMask(w, h) {
   const gradient = ctx.createRadialGradient(0, 0, inner, 0, 0, outer);
 
   gradient.addColorStop(0, "rgba(0,0,0,0)");
-  gradient.addColorStop(0.62, `rgba(0,0,0,${midDarkness})`);
-  gradient.addColorStop(1, `rgba(0,0,0,${edgeDarkness})`);
+  gradient.addColorStop(0.62, `rgba(0,0,0,${clamp(midDarkness, 0.03, 0.5)})`);
+  gradient.addColorStop(1, `rgba(0,0,0,${clamp(edgeDarkness, 0.22, 0.94)})`);
 
   ctx.fillStyle = gradient;
   ctx.fillRect(-w, -h, w * 2, h * 2);
@@ -1735,9 +1978,18 @@ function drawResourcePill(label, value, x0, y0, w0, color) {
   ctx.fillText(`${label} ${value}`, x0 + 23, y0 + 16);
 }
 
+function drawStatusBar(x0, y0, label, value, max, width, fill) {
+  ctx.fillStyle = "#aaa092";
+  ctx.font = "12px Arial";
+  ctx.textAlign = "left";
+  ctx.fillText(label, x0, y0 + 9);
+  drawPanel(x0 + 48, y0, width, 12, 6, "rgba(255,255,255,0.12)", null);
+  drawPanel(x0 + 48, y0, width * clamp(value / max, 0, 1), 12, 6, fill, null);
+}
+
 function drawHUD(w, h) {
-  const panelW = 430;
-  const panelH = 92;
+  const panelW = 560;
+  const panelH = 128;
   const x0 = w / 2 - panelW / 2;
   const y0 = 18;
 
@@ -1746,26 +1998,25 @@ function drawHUD(w, h) {
   ctx.textAlign = "center";
   ctx.fillStyle = "#d6bd82";
   ctx.font = "bold 13px Arial";
-  ctx.fillText(`DAY ${day}`, x0 + panelW / 2, y0 + 24);
+  ctx.fillText(`DAY ${day}`, x0 + panelW / 2, y0 + 22);
 
   ctx.textAlign = "left";
-  drawResourcePill("나무", inventory.wood, x0 + 20, y0 + 38, 84, "#9d6f3f");
-  drawResourcePill("돌", inventory.stone, x0 + 112, y0 + 38, 78, "#85888c");
-  drawResourcePill("수정", inventory.crystal, x0 + 198, y0 + 38, 88, "#78a9c5");
+  drawResourcePill("나무", inventory.wood, x0 + 18, y0 + 34, 78, "#9d6f3f");
+  drawResourcePill("돌", inventory.stone, x0 + 102, y0 + 34, 72, "#85888c");
+  drawResourcePill("수정", inventory.crystal, x0 + 180, y0 + 34, 82, "#78a9c5");
+  drawResourcePill("석탄", inventory.coal || 0, x0 + 268, y0 + 34, 78, "#393633");
 
-  ctx.fillStyle = "#aaa092";
-  ctx.font = "12px Arial";
-  ctx.fillText("기력", x0 + 306, y0 + 54);
-
-  drawPanel(x0 + 342, y0 + 45, 68, 12, 6, "rgba(255,255,255,0.12)", null);
-  drawPanel(x0 + 342, y0 + 45, 68 * (stamina / staminaMax), 12, 6, "#cbbf9d", null);
+  drawStatusBar(x0 + 360, y0 + 38, "기력", stamina, staminaMax, 124, "#cbbf9d");
+  drawStatusBar(x0 + 360, y0 + 62, "정신력", sanity, sanityMax, 124, "#9fb5d8");
+  drawStatusBar(x0 + 360, y0 + 86, "빛", lightPower, lightMax, 124, "#e0b55d");
 
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(255,255,255,0.45)";
   ctx.font = "11px Arial";
-  ctx.fillText(gathering ? "채집 중" : `${formatKey(controls.interact)} 상호작용`, x0 + 112, y0 + 78);
-  ctx.fillText(`${formatKey(controls.map)} 지도`, x0 + 214, y0 + 78);
-  ctx.fillText(canUseWorkbench() ? `${formatKey(controls.craft)} 제작` : `${formatKey(controls.craft)} 제작대 필요`, x0 + 310, y0 + 78);
+  ctx.fillText(gathering ? "채집 중" : `${formatKey(controls.interact)} 상호작용`, x0 + 108, y0 + 96);
+  ctx.fillText(`${formatKey(controls.map)} 지도`, x0 + 218, y0 + 96);
+  ctx.fillText(`${formatKey(controls.craft)} 제작`, x0 + 318, y0 + 96);
+  ctx.fillText(`${crafted.workbench ? "제작대 설치됨" : "제작대 없음"} / 이동식 Lv ${getPortableWorkbenchLevel()} / 랜턴 Lv ${getLanternLevel()}${debugInfiniteLantern ? " / 무한" : ""}`, x0 + 218, y0 + 116);
   ctx.textAlign = "left";
 
   ctx.strokeStyle = "rgba(255,255,255,0.85)";
@@ -1834,6 +2085,7 @@ function getInteractionText(target) {
   if (tile === TILE.WOOD) return `${key} 나무 채집`;
   if (tile === TILE.STONE) return `${key} 돌 채집`;
   if (tile === TILE.CRYSTAL) return `${key} 수정 채집`;
+  if (tile === TILE.COAL) return `${key} 석탄 채집`;
   if (tile === TILE.EXIT) return `${key} 깊은 출구`;
   return `${key} 상호작용`;
 }
@@ -1844,6 +2096,7 @@ function getMapTileColor(tile, explored) {
   if (tile === TILE.WOOD) return "#8a6139";
   if (tile === TILE.STONE) return "#777a80";
   if (tile === TILE.CRYSTAL) return "#80a8c8";
+  if (tile === TILE.COAL) return "#2e2b28";
   if (tile === TILE.MAZE_DOOR) return "#80562c";
   if (tile === TILE.EXIT) return "#b06150";
   if (tile === TILE.WORKBENCH) return "#9a7442";
@@ -1966,11 +2219,15 @@ function drawCraftRow(x0, y0, key, title, cost, note, done) {
 }
 
 function drawCraftPanel(w, h) {
-  const boxW = 420;
-  const boxH = 332;
+  const portableLevel = getPortableWorkbenchLevel();
+  const lanternLevel = getLanternLevel();
+  const boxW = 456;
+  const boxH = 494;
   const x0 = w / 2 - boxW / 2;
   const y0 = 28;
-  const title = scene === "base" ? "작업대" : "이동식 제작대";
+  const title = portableLevel <= 0
+    ? "간이 제작"
+    : (crafted.workbench === true && scene === "base" ? "제작대" : `이동식 제작대 Lv ${portableLevel}`);
 
   drawPanel(x0, y0, boxW, boxH, 8, "rgba(19,16,12,0.88)", "rgba(224,198,142,0.2)");
 
@@ -1980,46 +2237,66 @@ function drawCraftPanel(w, h) {
 
   ctx.fillStyle = "#aaa092";
   ctx.font = "12px Arial";
-  ctx.fillText("숫자키로 제작", x0 + 318, y0 + 34);
+  ctx.fillText("숫자키로 제작", x0 + 346, y0 + 34);
 
   const bootsLevel = getUpgradeLevel("boots");
   const markerLevel = getUpgradeLevel("marker");
-  const bootsMax = bootsLevel >= CRAFT_COSTS.boots.length;
-  const markerMax = markerLevel >= CRAFT_COSTS.marker.length;
-  const markerCost = formatCost(getNextUpgradeCost("marker"));
+  const portableMax = portableLevel >= CRAFT_COSTS.portableWorkbench.length;
+  const lanternMax = lanternLevel >= CRAFT_COSTS.lantern.length;
 
   drawCraftRow(
     x0 + 22,
     y0 + 58,
     "1",
-    `러너 부츠 Lv ${bootsLevel}/${CRAFT_COSTS.boots.length}`,
-    formatCost(getNextUpgradeCost("boots")),
-    `이동속도 +${bootsLevel * 5}%`,
-    bootsMax
+    `이동식 제작대 Lv ${portableLevel}/${CRAFT_COSTS.portableWorkbench.length}`,
+    formatCost(CRAFT_COSTS.portableWorkbench[portableLevel]),
+    portableLevel <= 0 ? "튜토리얼 첫 제작" : "제작 기능 확장",
+    portableMax
   );
-  drawCraftRow(x0 + 22, y0 + 114, "2", "랜턴", "나무 2 / 수정 2", "시야 증가", crafted.lantern);
   drawCraftRow(
     x0 + 22,
-    y0 + 170,
-    "3",
-    `지도 업그레이드 Lv ${markerLevel}/${CRAFT_COSTS.marker.length}`,
-    markerCost,
-    markerLevel >= 2 ? "미니맵 활성화" : "내 위치 표시",
-    markerMax
+    y0 + 114,
+    "2",
+    "제작대",
+    formatCost(CRAFT_COSTS.workbench),
+    portableLevel <= 0 ? "이동식 제작대 필요" : "기본 위치에 설치됨",
+    crafted.workbench === true
   );
+  drawCraftRow(x0 + 22, y0 + 170, "3", "횃불 사용", formatCost(CRAFT_COSTS.torch), `빛 +${CONFIG.torchLightGain}%`, false);
   drawCraftRow(
     x0 + 22,
     y0 + 226,
     "4",
-    "이동식 제작대",
-    formatCost(CRAFT_COSTS.portableWorkbench),
-    "밖에서도 제작 가능",
-    crafted.portableWorkbench
+    `랜턴 Lv ${lanternLevel}/${CRAFT_COSTS.lantern.length}`,
+    formatCost(CRAFT_COSTS.lantern[lanternLevel]),
+    lanternMax ? "최대 강화" : "석탄 소모 간격 증가",
+    lanternMax
+  );
+  drawCraftRow(
+    x0 + 22,
+    y0 + 282,
+    "5",
+    `러너 부츠 Lv ${bootsLevel}/${CRAFT_COSTS.boots.length}`,
+    formatCost(getNextUpgradeCost("boots")),
+    `이동속도 +${bootsLevel * 5}%`,
+    bootsLevel >= CRAFT_COSTS.boots.length
+  );
+  drawCraftRow(
+    x0 + 22,
+    y0 + 338,
+    "6",
+    `지도 업그레이드 Lv ${markerLevel}/${CRAFT_COSTS.marker.length}`,
+    formatCost(getNextUpgradeCost("marker")),
+    markerLevel >= 2 ? "미니맵 활성화" : "내 위치 표시",
+    markerLevel >= CRAFT_COSTS.marker.length
   );
 
   ctx.fillStyle = "#bdbdbd";
   ctx.font = "12px Arial";
-  ctx.fillText(`${formatKey(controls.craft)} 닫기`, x0 + 22, y0 + 312);
+  const guide = portableLevel <= 0
+    ? "기본 방의 재료를 모아 이동식 제작대부터 만드세요."
+    : (crafted.workbench !== true ? "이동식 제작대로 고정 제작대를 만들 수 있습니다." : `${formatKey(controls.craft)} 닫기`);
+  ctx.fillText(guide, x0 + 22, y0 + 468);
 }
 
 function gameLoop() {
@@ -2035,7 +2312,7 @@ startBtn.addEventListener("click", () => {
   loadSettings();
   generateMaze();
   requestGamePointerLock();
-  showMessage("문은 안쪽으로 열립니다. 이동식 제작대를 만들면 밖에서도 제작할 수 있습니다.");
+  showMessage("C로 제작창을 열고, 방 안 자원으로 이동식 제작대 Lv1을 먼저 만드세요.");
 });
 
 closeSettingsBtn.addEventListener("click", closeSettings);
@@ -2062,11 +2339,16 @@ fillTestBtn.addEventListener("click", () => {
   testWood.value = "99";
   testStone.value = "99";
   testCrystal.value = "99";
+  if (testCoal) testCoal.value = "99";
   testStamina.value = "100";
+  if (testSanity) testSanity.value = "100";
+  if (testLight) testLight.value = "100";
   testBoots.value = String(CRAFT_COSTS.boots.length);
   testMarker.value = String(CRAFT_COSTS.marker.length);
-  testLantern.checked = true;
-  if (testPortableWorkbench) testPortableWorkbench.checked = true;
+  if (testWorkbench) testWorkbench.checked = true;
+  if (testLantern) testLantern.value = String(CRAFT_COSTS.lantern.length);
+  if (testPortableWorkbench) testPortableWorkbench.value = String(CRAFT_COSTS.portableWorkbench.length);
+  if (testInfiniteLantern) testInfiniteLantern.checked = true;
   applyTestValues();
   showMessage("테스트 값 적용 - 이동식 제작대 포함");
 });
@@ -2141,16 +2423,17 @@ window.addEventListener("keydown", (e) => {
   }
 
   if (e.code === controls.craft) {
-    if (canUseWorkbench()) showCraft = !showCraft;
-    else showMessage("밖에서 제작하려면 이동식 제작대를 먼저 만들어야 합니다.");
+    showCraft = !showCraft;
     return;
   }
 
-  if (showCraft && canUseWorkbench()) {
-    if (e.code === "Digit1") craft("boots");
-    if (e.code === "Digit2") craft("lantern");
-    if (e.code === "Digit3") craft("marker");
-    if (e.code === "Digit4") craft("portableWorkbench");
+  if (showCraft) {
+    if (e.code === "Digit1") craft("portableWorkbench");
+    if (e.code === "Digit2") craft("workbench");
+    if (e.code === "Digit3") craft("torch");
+    if (e.code === "Digit4") craft("lantern");
+    if (e.code === "Digit5") craft("boots");
+    if (e.code === "Digit6") craft("marker");
   }
 
   keys[e.code] = true;
