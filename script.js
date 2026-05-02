@@ -202,6 +202,9 @@ const CONFIG = {
   rotSpeed: 0.0018,
   walkSpeed: 0.035,
   runSpeed: 0.06,
+  runStartStaminaRatio: 0.20,
+  runResumeStaminaRatio: 0.30,
+  staminaExhaustRecoverDelay: 30,
   baseSize: 9,
   mazeCells: 68,
   resourceDensity: 0.055,
@@ -253,6 +256,10 @@ let mouseSensitivity = 1;
 
 let stamina = 100;
 let staminaMax = 100;
+let runLockedByStamina = false;
+let sprintActive = false;
+let staminaRecoverWait = 0;
+let staminaRecoveryStarted = false;
 let sanity = 100;
 let sanityMax = 100;
 let lightPower = 60;
@@ -655,6 +662,9 @@ function resetGameProgress() {
   inventoryOpen = false;
   gathering = null;
   stamina = staminaMax;
+  runLockedByStamina = false;
+  sprintActive = false;
+  staminaRecoverWait = 0;
   sanity = sanityMax;
   lightPower = 60;
   torchPower = 0;
@@ -1163,10 +1173,11 @@ function carveCentralBaseInMaze() {
   }
 
   // 튜토리얼 자원: 처음 기본 방에는 제작대/보관함 없이 재료만 놓인다.
-  // 이 재료를 모으면 제작 기술 Lv1을 바로 연구할 수 있다.
-  // 튜토리얼 재료: 제작 기술 Lv1에 필요한 것만 둔다.
+  // 제작 기술 Lv1 재료와 첫 횃불 제작 재료를 같이 둔다.
   level[centerY + 1][centerX - 1] = TILE.WOOD;
   level[centerY + 1][centerX + 1] = TILE.STONE;
+  level[centerY + 2][centerX - 1] = TILE.WOOD;
+  level[centerY + 2][centerX + 1] = TILE.COAL;
 
   // 고정 제작대를 따로 만든 뒤에는 기본 위치에 제작대가 설치된다.
   installBaseWorkbenchIfUnlocked();
@@ -1488,6 +1499,18 @@ function getRunStaminaDrainPerFrame() {
   return (getUpgradeLevel("boots") >= 1 ? 30 : 40) / 60;
 }
 
+function getRunStartStaminaThreshold() {
+  return getStaminaMax() * CONFIG.runStartStaminaRatio;
+}
+
+function getRunResumeStaminaThreshold() {
+  return getStaminaMax() * CONFIG.runResumeStaminaRatio;
+}
+
+function canStartRunning() {
+  return stamina >= getRunStartStaminaThreshold() && !runLockedByStamina;
+}
+
 function getMachineUpgradeLevel() {
   return clamp(Number(crafted.machineUpgrade) || 0, 0, CRAFT_COSTS.machineUpgrade.length);
 }
@@ -1659,16 +1682,67 @@ function updateMovement() {
   if (keys[controls.right]) { ix += rx; iy += ry; }
 
   const moving = ix !== 0 || iy !== 0;
-  const running = keys[controls.run] && moving && stamina > 0;
-  let speed = running ? CONFIG.runSpeed : CONFIG.walkSpeed;
-
-  speed *= 1 + getUpgradeLevel("boots") * 0.05;
 
   staminaMax = getStaminaMax();
   stamina = clamp(stamina, 0, staminaMax);
 
-  if (running) stamina = Math.max(0, stamina - getRunStaminaDrainPerFrame());
-  else stamina = Math.min(staminaMax, stamina + 0.35);
+  const wantsToRun = keys[controls.run] && moving;
+
+  // 기력이 0이 되면 약 0.5초 동안 완전히 멈춘 뒤 회복이 시작된다.
+  // 회복이 한 번 시작되면 걷거나 Shift를 누르고 있어도 중간에 멈추지 않고 계속 찬다.
+  if (runLockedByStamina) {
+    sprintActive = false;
+
+    if (!staminaRecoveryStarted) {
+      if (moving || keys[controls.run]) {
+        staminaRecoverWait = 0;
+      } else {
+        staminaRecoverWait++;
+        if (staminaRecoverWait >= CONFIG.staminaExhaustRecoverDelay) {
+          staminaRecoveryStarted = true;
+        }
+      }
+    }
+
+    if (staminaRecoveryStarted && stamina < staminaMax) {
+      stamina = Math.min(staminaMax, stamina + 0.35);
+    }
+
+    if (stamina >= getRunResumeStaminaThreshold()) {
+      runLockedByStamina = false;
+      staminaRecoverWait = 0;
+      staminaRecoveryStarted = false;
+    }
+  } else {
+    if (!wantsToRun) {
+      sprintActive = false;
+    }
+
+    if (wantsToRun && !sprintActive && stamina >= getRunStartStaminaThreshold()) {
+      sprintActive = true;
+    }
+
+    const running = wantsToRun && sprintActive && stamina > 0;
+
+    if (running) {
+      stamina = Math.max(0, stamina - getRunStaminaDrainPerFrame());
+
+      if (stamina <= 0) {
+        stamina = 0;
+        sprintActive = false;
+        runLockedByStamina = true;
+        staminaRecoverWait = 0;
+        staminaRecoveryStarted = false;
+      }
+    } else if (stamina < staminaMax) {
+      stamina = Math.min(staminaMax, stamina + 0.35);
+    }
+  }
+
+  const runningNow = wantsToRun && sprintActive && !runLockedByStamina && stamina > 0;
+  let speed = runningNow ? CONFIG.runSpeed : CONFIG.walkSpeed;
+
+  speed *= 1 + getUpgradeLevel("boots") * 0.05;
 
   const len = Math.hypot(ix, iy);
 
@@ -2130,7 +2204,11 @@ function drawStatusBar(x0, y0, label, value, max, width, fill) {
   ctx.fill();
 
   if (ratio > 0) {
-    roundedRectPath(x0, y0, Math.max(barH, width * ratio), barH, 7);
+    // 게이지가 낮은 구간에서 "최소 막대 길이" 때문에 멈춰 보이던 문제를 제거한다.
+    // 이전에는 Math.max(barH, width * ratio)를 사용해서 약 7~10% 구간에서
+    // 시각적으로 같은 길이를 유지하다가 갑자기 움직이는 것처럼 보였다.
+    const fillW = Math.max(1, width * ratio);
+    roundedRectPath(x0, y0, fillW, barH, Math.min(7, fillW / 2));
     ctx.fillStyle = fill;
     ctx.fill();
   }
@@ -2653,6 +2731,10 @@ window.addEventListener("keydown", (e) => {
 
 window.addEventListener("keyup", (e) => {
   keys[e.code] = false;
+
+  if (e.code === controls.run) {
+    sprintActive = false;
+  }
 });
 
 window.addEventListener("mousemove", (e) => {
