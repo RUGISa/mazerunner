@@ -208,11 +208,11 @@ const CONFIG = {
   interactDistance: 1.25,
   playerRadius: 0.30,
   baseLightRecover: 0.18,
-  mazeLightDecay: 0.65,
-  torchDecay: 0.65,
-  sanityDrainAtDark: 0.055,
+  mazeLightDecay: 0.325,
+  torchDecay: 0.24,
+  sanityDrainAtDark: 0.025,
   sanityRecoverInBase: 0.035,
-  torchStackGain: 100,
+  torchStackGain: 180,
   lanternFuelIntervals: [0, 1500, 2600],
   gather: {
     wood: { duration: 72, staminaCost: 10, minStamina: 8 },
@@ -1457,7 +1457,7 @@ function getTorchLevel() {
 }
 
 function getTorchMax() {
-  return getCraftTechLevel() >= 1 ? 100 + getTorchLevel() * 100 : 0;
+  return getCraftTechLevel() >= 1 ? 180 + getTorchLevel() * 180 : 0;
 }
 
 function getMachineUpgradeLevel() {
