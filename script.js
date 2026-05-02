@@ -208,10 +208,13 @@ const CONFIG = {
   interactDistance: 1.25,
   playerRadius: 0.30,
   baseLightRecover: 0.18,
-  mazeLightDecay: 0.325,
-  torchDecay: 0.24,
-  sanityDrainAtDark: 0.025,
+  // 초당 기준 수치를 60프레임 기준으로 나눠 사용한다.
+  // 빛 감소: 기본 10L/s, 업그레이드 I 8L/s, 업그레이드 II 5L/s.
+  mazeLightDecay: 10 / 60,
+  torchDecay: 10 / 60,
+  sanityDrainAtDark: 1.5 / 60,
   sanityRecoverInBase: 0.035,
+  // 횃불 제작은 현재 횃불 최대치까지 채운다. 값은 getTorchMax()에서 관리한다.
   torchStackGain: 180,
   lanternFuelIntervals: [0, 1500, 2600],
   gather: {
@@ -518,6 +521,7 @@ function normalizeCraftedProgress() {
   crafted.craftTech = clamp(Number(crafted.craftTech) || 0, 0, CRAFT_COSTS.craftTech.length);
   crafted.torchLevel = clamp(Number(crafted.torchLevel) || 0, 0, CRAFT_COSTS.torch.length);
   torchPower = clamp(Number(torchPower) || 0, 0, getTorchMax());
+  lightPower = clamp(Number(lightPower) || 0, 0, getLightMax());
   crafted.machineWorkbench = crafted.machineWorkbench === true;
   crafted.machineUpgrade = clamp(Number(crafted.machineUpgrade) || 0, 0, CRAFT_COSTS.machineUpgrade.length);
 
@@ -543,9 +547,12 @@ function loadProgress() {
     if (explored) exploredTiles = explored;
     if (doors && typeof doors === "object") doorStates = doors;
     if (survival && typeof survival === "object") {
-      sanity = clamp(Number(survival.sanity) || sanity, 0, sanityMax);
-      lightPower = clamp(Number(survival.lightPower) || lightPower, 0, lightMax);
-      torchPower = clamp(Number(survival.torchPower) || torchPower, 0, getTorchMax());
+      const savedSanity = Number(survival.sanity);
+      const savedLight = Number(survival.lightPower);
+      const savedTorch = Number(survival.torchPower);
+      sanity = Number.isFinite(savedSanity) ? clamp(savedSanity, 0, sanityMax) : sanity;
+      lightPower = Number.isFinite(savedLight) ? clamp(savedLight, 0, getLightMax()) : lightPower;
+      torchPower = Number.isFinite(savedTorch) ? clamp(savedTorch, 0, getTorchMax()) : torchPower;
       lanternFuelTimer = Math.max(0, Number(survival.lanternFuelTimer) || 0);
       debugInfiniteLantern = survival.debugInfiniteLantern === true;
     }
@@ -710,7 +717,7 @@ function applyTestValues() {
   inventory.coal = testCoal ? readTestNumber(testCoal, 0, 999) : (inventory.coal || 0);
   stamina = readTestNumber(testStamina, 0, staminaMax);
   sanity = testSanity ? readTestNumber(testSanity, 0, sanityMax) : sanity;
-  lightPower = testLight ? readTestNumber(testLight, 0, lightMax) : lightPower;
+  lightPower = testLight ? readTestNumber(testLight, 0, getLightMax()) : lightPower;
   crafted.boots = readTestNumber(testBoots, 0, CRAFT_COSTS.boots.length);
   crafted.marker = readTestNumber(testMarker, 0, CRAFT_COSTS.marker.length);
   crafted.workbench = testWorkbench ? testWorkbench.checked : crafted.workbench;
@@ -845,7 +852,7 @@ function wouldDoorBlockPlayer(tx, ty) {
 }
 
 function getLightRatio() {
-  return clamp(lightPower / lightMax, 0, 1);
+  return clamp(lightPower / getLightMax(), 0, 1);
 }
 
 function getPortableWorkbenchLevel() {
@@ -1457,7 +1464,28 @@ function getTorchLevel() {
 }
 
 function getTorchMax() {
-  return getCraftTechLevel() >= 1 ? 180 + getTorchLevel() * 180 : 0;
+  if (getCraftTechLevel() < 1) return 0;
+  const torchMaxByLevel = [180, 250, 300];
+  return torchMaxByLevel[getTorchLevel()] || torchMaxByLevel[torchMaxByLevel.length - 1];
+}
+
+function getLightMax() {
+  const lightMaxByLanternLevel = [100, 200, 300];
+  return lightMaxByLanternLevel[getLanternLevel()] || lightMaxByLanternLevel[lightMaxByLanternLevel.length - 1];
+}
+
+function getLightDecayPerFrame() {
+  const lightDecayPerSecond = [10, 8, 5];
+  const perSecond = lightDecayPerSecond[getLanternLevel()] || lightDecayPerSecond[lightDecayPerSecond.length - 1];
+  return perSecond / 60;
+}
+
+function getStaminaMax() {
+  return getUpgradeLevel("boots") >= 1 ? 150 : 100;
+}
+
+function getRunStaminaDrainPerFrame() {
+  return (getUpgradeLevel("boots") >= 1 ? 30 : 40) / 60;
 }
 
 function getMachineUpgradeLevel() {
@@ -1555,10 +1583,11 @@ function craft(item) {
 
   if (item === "torchUse" && canCraft("torchUse")) {
     spendMaterials(CRAFT_COSTS.torchUse);
-    const gain = CONFIG.torchStackGain;
-    torchPower = clamp(torchPower + gain, 0, getTorchMax());
+    const maxTorch = getTorchMax();
+    const gain = Math.max(0, maxTorch - torchPower);
+    torchPower = maxTorch;
     saveProgress();
-    showMessage(`횃불을 만들었습니다. 횃불 +${gain}%`);
+    showMessage(`횃불을 만들었습니다. 횃불 +${Math.round(gain)}L`);
     return;
   }
 
@@ -1566,6 +1595,7 @@ function craft(item) {
     spendMaterials(CRAFT_COSTS.lantern[getLanternLevel()]);
     crafted.lanternLevel = getLanternLevel() + 1;
     crafted.lantern = true;
+    lightPower = clamp(lightPower, 0, getLightMax());
     lanternFuelTimer = 0;
     saveProgress();
     updateRenderSettings(true);
@@ -1634,7 +1664,10 @@ function updateMovement() {
 
   speed *= 1 + getUpgradeLevel("boots") * 0.05;
 
-  if (running) stamina = Math.max(0, stamina - 0.7);
+  staminaMax = getStaminaMax();
+  stamina = clamp(stamina, 0, staminaMax);
+
+  if (running) stamina = Math.max(0, stamina - getRunStaminaDrainPerFrame());
   else stamina = Math.min(staminaMax, stamina + 0.35);
 
   const len = Math.hypot(ix, iy);
@@ -1652,7 +1685,7 @@ function updateSurvivalSystems() {
   const lanternLevel = getLanternLevel();
 
   if (debugInfiniteLantern) {
-    lightPower = lightMax;
+    lightPower = getLightMax();
   } else {
     if (inMaze && lanternLevel > 0) {
       lanternFuelTimer--;
@@ -1660,7 +1693,7 @@ function updateSurvivalSystems() {
         const interval = CONFIG.lanternFuelIntervals[lanternLevel] || CONFIG.lanternFuelIntervals[1];
         if ((inventory.coal || 0) > 0) {
           inventory.coal--;
-          lightPower = lightMax;
+          lightPower = getLightMax();
           lanternFuelTimer = interval;
           saveProgress();
         } else {
@@ -1673,10 +1706,10 @@ function updateSurvivalSystems() {
       if (torchPower > 0) {
         torchPower = clamp(torchPower - CONFIG.torchDecay, 0, getTorchMax());
       } else {
-        lightPower = clamp(lightPower - CONFIG.mazeLightDecay, 0, lightMax);
+        lightPower = clamp(lightPower - getLightDecayPerFrame(), 0, getLightMax());
       }
     } else {
-      lightPower = clamp(lightPower + CONFIG.baseLightRecover, 0, lightMax);
+      lightPower = clamp(lightPower + CONFIG.baseLightRecover, 0, getLightMax());
     }
   }
 
@@ -2126,7 +2159,7 @@ function drawHUD(w, h) {
     barY += rowGap;
   }
 
-  drawStatusBar(barX, barY, "빛", lightPower, lightMax, barW, "#d5aa55");
+  drawStatusBar(barX, barY, "빛", lightPower, getLightMax(), barW, "#d5aa55");
   barY += rowGap;
   drawStatusBar(barX, barY, "정신력", sanity, sanityMax, barW, "#9daec7");
   barY += rowGap;
@@ -2397,7 +2430,7 @@ function getVisibleCraftRows() {
   }
 
   if (isCraftUnlocked("torchUse")) {
-    add("torchUse", "횃불 만들기", formatCost(CRAFT_COSTS.torchUse), `횃불 ${Math.round(torchPower)}/${getTorchMax()}`);
+    add("torchUse", "횃불 만들기", formatCost(CRAFT_COSTS.torchUse), `횃불 ${Math.round(torchPower)}/${getTorchMax()}L`);
   }
 
   if (isCraftUnlocked("torch")) {
