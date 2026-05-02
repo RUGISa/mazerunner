@@ -156,6 +156,33 @@ const RESOURCE_NAMES = {
 };
 
 const CRAFT_COSTS = {
+  // 더 이상 이동식 제작대로 시작하지 않는다. 처음 해금은 제작 기술 Lv1이다.
+  portableWorkbench: [
+    { wood: 2, stone: 1, crystal: 1 }
+  ],
+  craftTech: [
+    { wood: 1, stone: 1 },
+    { wood: 2, stone: 2 },
+    { wood: 3, stone: 2, crystal: 1 },
+    { wood: 4, stone: 3, crystal: 2, coal: 2 }
+  ],
+  workbench: { wood: 3, stone: 2, coal: 1 },
+  machineWorkbench: { wood: 4, stone: 4, coal: 2 },
+  machineUpgrade: [
+    { stone: 3, coal: 2 },
+    { stone: 4, crystal: 1, coal: 3 },
+    { stone: 6, crystal: 2, coal: 4 }
+  ],
+  // torch는 최대치 강화, torchUse는 실제 횃불 제작이다.
+  torch: [
+    { wood: 2, coal: 1 },
+    { wood: 2, coal: 2, crystal: 1 }
+  ],
+  torchUse: { wood: 1, coal: 1 },
+  lantern: [
+    { wood: 2, crystal: 2, coal: 2 },
+    { crystal: 3, coal: 4 }
+  ],
   boots: [
     { wood: 2, stone: 1 },
     { wood: 3, stone: 2 },
@@ -164,19 +191,7 @@ const CRAFT_COSTS = {
   marker: [
     { stone: 2, crystal: 1 },
     { stone: 4, crystal: 2 }
-  ],
-  workbench: { wood: 3, stone: 2, coal: 1 },
-  portableWorkbench: [
-    { wood: 2, stone: 1, crystal: 1 },
-    { wood: 4, stone: 3, coal: 2 },
-    { wood: 6, stone: 5, crystal: 2, coal: 4 }
-  ],
-  lantern: [
-    { wood: 2, crystal: 2, coal: 1 },
-    { crystal: 2, coal: 3 },
-    { crystal: 4, coal: 5 }
-  ],
-  torch: { wood: 1, coal: 1 }
+  ]
 };
 
 const CONFIG = {
@@ -193,11 +208,12 @@ const CONFIG = {
   interactDistance: 1.25,
   playerRadius: 0.30,
   baseLightRecover: 0.18,
-  mazeLightDecay: 0.026,
+  mazeLightDecay: 0.65,
+  torchDecay: 0.65,
   sanityDrainAtDark: 0.055,
   sanityRecoverInBase: 0.035,
-  torchLightGain: 35,
-  lanternFuelIntervals: [0, 1500, 2400, 3600],
+  torchStackGain: 100,
+  lanternFuelIntervals: [0, 1500, 2600],
   gather: {
     wood: { duration: 72, staminaCost: 10, minStamina: 8 },
     stone: { duration: 108, staminaCost: 16, minStamina: 12 },
@@ -225,6 +241,7 @@ let mazeSeed = getDailySeed(day);
 
 let mapOpen = false;
 let showCraft = false;
+let inventoryOpen = false;
 let settingsOpen = false;
 let testOpen = false;
 let bindingAction = null;
@@ -237,6 +254,7 @@ let sanity = 100;
 let sanityMax = 100;
 let lightPower = 60;
 let lightMax = 100;
+let torchPower = 0;
 let lanternFuelTimer = 0;
 let gameOver = false;
 let debugInfiniteLantern = false;
@@ -260,10 +278,15 @@ let crafted = {
   map: true,
   marker: 0,
   workbench: false,
-  portableWorkbench: 0
+  portableWorkbench: 0,
+  craftTech: 0,
+  torchLevel: 0,
+  machineWorkbench: false,
+  machineUpgrade: 0
 };
 
 let messageTimer = 0;
+let craftHotkeys = {};
 
 
 function setRendererColorSpace(targetRenderer) {
@@ -477,7 +500,7 @@ function saveProgress() {
   localStorage.setItem("mta_collected_resources", JSON.stringify(collectedResources));
   localStorage.setItem("mta_explored_tiles", JSON.stringify(exploredTiles));
   localStorage.setItem("mta_door_states", JSON.stringify(doorStates));
-  localStorage.setItem("mta_survival", JSON.stringify({ sanity, lightPower, lanternFuelTimer, debugInfiniteLantern }));
+  localStorage.setItem("mta_survival", JSON.stringify({ sanity, lightPower, torchPower, lanternFuelTimer, debugInfiniteLantern }));
 }
 
 function normalizeCraftedProgress() {
@@ -491,6 +514,12 @@ function normalizeCraftedProgress() {
   const oldPortable = crafted.portableWorkbench === true || crafted.portableBench === true ? 1 : 0;
   crafted.portableWorkbench = clamp(Number(crafted.portableWorkbench) || oldPortable, 0, CRAFT_COSTS.portableWorkbench.length);
   delete crafted.portableBench;
+
+  crafted.craftTech = clamp(Number(crafted.craftTech) || 0, 0, CRAFT_COSTS.craftTech.length);
+  crafted.torchLevel = clamp(Number(crafted.torchLevel) || 0, 0, CRAFT_COSTS.torch.length);
+  torchPower = clamp(Number(torchPower) || 0, 0, getTorchMax());
+  crafted.machineWorkbench = crafted.machineWorkbench === true;
+  crafted.machineUpgrade = clamp(Number(crafted.machineUpgrade) || 0, 0, CRAFT_COSTS.machineUpgrade.length);
 
   // v10부터 이동식 제작대와 고정 제작대는 완전히 분리한다.
   // 이전 저장의 hasWorkbench만 고정 제작대로 인정하고, portableWorkbench는 휴대용 단계로만 유지한다.
@@ -516,6 +545,7 @@ function loadProgress() {
     if (survival && typeof survival === "object") {
       sanity = clamp(Number(survival.sanity) || sanity, 0, sanityMax);
       lightPower = clamp(Number(survival.lightPower) || lightPower, 0, lightMax);
+      torchPower = clamp(Number(survival.torchPower) || torchPower, 0, getTorchMax());
       lanternFuelTimer = Math.max(0, Number(survival.lanternFuelTimer) || 0);
       debugInfiniteLantern = survival.debugInfiniteLantern === true;
     }
@@ -526,7 +556,7 @@ function loadProgress() {
     collectedResources = {};
     exploredTiles = {};
     doorStates = {};
-    crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, portableWorkbench: 0 };
+    crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, portableWorkbench: 0, craftTech: 0, torchLevel: 0, machineWorkbench: false, machineUpgrade: 0 };
   }
 }
 
@@ -583,6 +613,7 @@ function openSettings() {
   settingsOpen = true;
   mapOpen = false;
   showCraft = false;
+  inventoryOpen = false;
   gathering = null;
   bindingAction = null;
   settingsScreen.classList.remove("hidden");
@@ -614,17 +645,19 @@ function resetGameProgress() {
   mazeSeed = getDailySeed(day);
   mapOpen = false;
   showCraft = false;
+  inventoryOpen = false;
   gathering = null;
   stamina = staminaMax;
   sanity = sanityMax;
   lightPower = 60;
+  torchPower = 0;
   lanternFuelTimer = 0;
   gameOver = false;
   inventory = { wood: 0, stone: 0, crystal: 0, coal: 0 };
   collectedResources = {};
   exploredTiles = {};
   doorStates = {};
-  crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, portableWorkbench: 0 };
+  crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, portableWorkbench: 0, craftTech: 0, torchLevel: 0, machineWorkbench: false, machineUpgrade: 0 };
 
   generateMaze();
   saveProgress();
@@ -642,7 +675,7 @@ function syncTestPanel() {
   testMarker.value = String(getUpgradeLevel("marker"));
   if (testWorkbench) testWorkbench.checked = crafted.workbench === true;
   if (testLantern) testLantern.value = String(crafted.lanternLevel || 0);
-  if (testPortableWorkbench) testPortableWorkbench.value = String(getPortableWorkbenchLevel());
+  if (testPortableWorkbench) testPortableWorkbench.value = String(getCraftTechLevel());
   if (testInfiniteLantern) testInfiniteLantern.checked = debugInfiniteLantern;
 }
 
@@ -683,7 +716,7 @@ function applyTestValues() {
   crafted.workbench = testWorkbench ? testWorkbench.checked : crafted.workbench;
   crafted.lanternLevel = testLantern ? readTestNumber(testLantern, 0, CRAFT_COSTS.lantern.length) : crafted.lanternLevel;
   crafted.lantern = crafted.lanternLevel > 0;
-  crafted.portableWorkbench = testPortableWorkbench ? readTestNumber(testPortableWorkbench, 0, CRAFT_COSTS.portableWorkbench.length) : crafted.portableWorkbench;
+  crafted.craftTech = testPortableWorkbench ? readTestNumber(testPortableWorkbench, 0, CRAFT_COSTS.craftTech.length) : crafted.craftTech;
   debugInfiniteLantern = testInfiniteLantern ? testInfiniteLantern.checked : debugInfiniteLantern;
   crafted.map = true;
 
@@ -828,11 +861,13 @@ function isLanternActive() {
 }
 
 function getCurrentFov() {
-  return CONFIG.mazeFov + (CONFIG.lanternFov - CONFIG.mazeFov) * Math.max(getLightRatio(), isLanternActive() ? 0.7 : 0);
+  // 빛이 줄어들 때 화면이 줌인/줌아웃되면 멀미가 날 수 있으므로 FOV는 고정한다.
+  return isLanternActive() ? CONFIG.lanternFov : CONFIG.mazeFov;
 }
 
 function getCurrentRayDepth() {
-  return CONFIG.mazeRayDepth + (CONFIG.lanternRayDepth - CONFIG.mazeRayDepth) * Math.max(getLightRatio(), isLanternActive() ? 0.7 : 0);
+  // 시야 밝기는 어두움 효과와 조명으로만 표현하고, 카메라 줌에는 연결하지 않는다.
+  return isLanternActive() ? CONFIG.lanternRayDepth : CONFIG.mazeRayDepth;
 }
 
 function isInsideCentralBase(tx, ty) {
@@ -1121,11 +1156,10 @@ function carveCentralBaseInMaze() {
   }
 
   // 튜토리얼 자원: 처음 기본 방에는 제작대/보관함 없이 재료만 놓인다.
-  // 이 네 개를 모으면 이동식 제작대 Lv1만 먼저 만들 수 있다.
-  level[centerY + 1][centerX - 2] = TILE.WOOD;
+  // 이 재료를 모으면 제작 기술 Lv1을 바로 연구할 수 있다.
+  // 튜토리얼 재료: 제작 기술 Lv1에 필요한 것만 둔다.
   level[centerY + 1][centerX - 1] = TILE.WOOD;
   level[centerY + 1][centerX + 1] = TILE.STONE;
-  level[centerY + 1][centerX + 2] = TILE.CRYSTAL;
 
   // 고정 제작대를 따로 만든 뒤에는 기본 위치에 제작대가 설치된다.
   installBaseWorkbenchIfUnlocked();
@@ -1332,7 +1366,7 @@ function interact() {
 
   if (target.tile === TILE.WORKBENCH) {
     if (crafted.workbench !== true) {
-      showMessage("이동식 제작대로 제작대를 만든 뒤 사용할 수 있습니다.");
+      showMessage("제작 기술 Lv2를 연구한 뒤 제작대를 만들 수 있습니다.");
       return;
     }
 
@@ -1368,11 +1402,11 @@ function canUseMainWorkbench() {
 }
 
 function canUsePortableWorkbench() {
-  return getPortableWorkbenchLevel() >= 1;
+  return false;
 }
 
 function canUseWorkbench() {
-  return canUseMainWorkbench() || canUsePortableWorkbench() || crafted.workbench !== true;
+  return true;
 }
 
 function getUpgradeLevel(item) {
@@ -1414,45 +1448,89 @@ function formatCost(cost) {
   return parts.join(" / ");
 }
 
+function getCraftTechLevel() {
+  return clamp(Number(crafted.craftTech) || 0, 0, CRAFT_COSTS.craftTech.length);
+}
+
+function getTorchLevel() {
+  return clamp(Number(crafted.torchLevel) || 0, 0, CRAFT_COSTS.torch.length);
+}
+
+function getTorchMax() {
+  return getCraftTechLevel() >= 1 ? 100 + getTorchLevel() * 100 : 0;
+}
+
+function getMachineUpgradeLevel() {
+  return clamp(Number(crafted.machineUpgrade) || 0, 0, CRAFT_COSTS.machineUpgrade.length);
+}
+
+function isCraftUnlocked(item) {
+  const techLevel = getCraftTechLevel();
+  const torchLevel = getTorchLevel();
+  const lanternLevel = getLanternLevel();
+  const machineLevel = getMachineUpgradeLevel();
+
+  // 시작은 이동식 제작대가 아니라 제작 기술 Lv1이다.
+  if (item === "craftTech") return techLevel < CRAFT_COSTS.craftTech.length;
+
+  // 제작 기술 Lv1 이후부터 횃불 제작이 먼저 열리고, 횃불 업그레이드는 최대치를 늘린다.
+  if (item === "torchUse") return techLevel >= 1 && torchPower < getTorchMax();
+  if (item === "torch") return techLevel >= 1 && torchLevel < CRAFT_COSTS.torch.length;
+
+  if (item === "workbench") return techLevel >= 2 && crafted.workbench !== true;
+  if (item === "machineWorkbench") return crafted.workbench === true && crafted.machineWorkbench !== true;
+  if (item === "machineUpgrade") return crafted.machineWorkbench === true && machineLevel < CRAFT_COSTS.machineUpgrade.length;
+  if (item === "lantern") return techLevel >= 3 && lanternLevel < Math.min(techLevel - 2, CRAFT_COSTS.lantern.length);
+
+  if (item === "boots") return techLevel >= 3 && crafted.workbench === true;
+  if (item === "marker") return techLevel >= 3 && crafted.workbench === true && crafted.map;
+
+  // 이전 저장 호환용. 신규 테크트리에서는 제작창에 노출하지 않는다.
+  if (item === "portableWorkbench") return false;
+  return false;
+}
+
 function canCraft(item) {
-  const portableLevel = getPortableWorkbenchLevel();
-  const hasPortable = canUsePortableWorkbench();
-  const hasMain = canUseMainWorkbench();
-  const hasAnyWorkbench = hasMain || hasPortable;
+  if (!isCraftUnlocked(item)) return false;
 
-  // 첫 튜토리얼 제작: 제작대 없이도 이동식 제작대 Lv1만 만들 수 있다.
-  if (item === "portableWorkbench") {
-    const nextCost = CRAFT_COSTS.portableWorkbench[portableLevel];
-    if (!nextCost) return false;
-    if (portableLevel <= 0) return scene === "base" && hasMaterials(nextCost);
-    return hasAnyWorkbench && hasMaterials(nextCost);
+  const techLevel = getCraftTechLevel();
+  const torchLevel = getTorchLevel();
+  const lanternLevel = getLanternLevel();
+  const machineLevel = getMachineUpgradeLevel();
+
+  // 제작 기술 Lv1은 기본 방에서 손으로 연구하는 첫 제작이다.
+  if (item === "craftTech") {
+    if (techLevel === 0) return scene === "base" && hasMaterials(CRAFT_COSTS.craftTech[techLevel]);
+    return hasMaterials(CRAFT_COSTS.craftTech[techLevel]);
   }
 
-  // 고정 제작대는 이동식 제작대 Lv1을 만든 뒤에만 만들 수 있다.
-  if (item === "workbench") {
-    return crafted.workbench !== true && scene === "base" && portableLevel >= 1 && hasMaterials(CRAFT_COSTS.workbench);
-  }
+  if (item === "workbench") return scene === "base" && techLevel >= 2 && hasMaterials(CRAFT_COSTS.workbench);
+  if (item === "torch") return techLevel >= 1 && hasMaterials(CRAFT_COSTS.torch[torchLevel]);
+  if (item === "torchUse") return techLevel >= 1 && torchPower < getTorchMax() && hasMaterials(CRAFT_COSTS.torchUse);
+  if (item === "lantern") return techLevel >= 3 && hasMaterials(CRAFT_COSTS.lantern[lanternLevel]);
+  if (item === "machineWorkbench") return canUseMainWorkbench() && hasMaterials(CRAFT_COSTS.machineWorkbench);
+  if (item === "machineUpgrade") return canUseMainWorkbench() && hasMaterials(CRAFT_COSTS.machineUpgrade[machineLevel]);
 
-  if (!hasAnyWorkbench) return false;
-
-  if (item === "torch") return hasMaterials(CRAFT_COSTS.torch);
-  if (item === "lantern") return hasMaterials(CRAFT_COSTS.lantern[getLanternLevel()]);
-
-  if (scene !== "base" && portableLevel < 1) return false;
-
-  if (item === "boots") return hasMaterials(getNextUpgradeCost("boots"));
-  if (item === "marker") return crafted.map && hasMaterials(getNextUpgradeCost("marker"));
+  if (item === "boots") return canUseMainWorkbench() && hasMaterials(getNextUpgradeCost("boots"));
+  if (item === "marker") return canUseMainWorkbench() && hasMaterials(getNextUpgradeCost("marker"));
   return false;
 }
 
 function craft(item) {
-  const portableLevel = getPortableWorkbenchLevel();
+  const techLevel = getCraftTechLevel();
+  const torchLevel = getTorchLevel();
+  const machineLevel = getMachineUpgradeLevel();
 
-  if (item === "portableWorkbench" && canCraft("portableWorkbench")) {
-    spendMaterials(CRAFT_COSTS.portableWorkbench[portableLevel]);
-    crafted.portableWorkbench = portableLevel + 1;
+  if (!isCraftUnlocked(item)) {
+    showMessage("아직 테크트리 조건을 만족하지 못했습니다.");
+    return;
+  }
+
+  if (item === "craftTech" && canCraft("craftTech")) {
+    spendMaterials(CRAFT_COSTS.craftTech[techLevel]);
+    crafted.craftTech = techLevel + 1;
     saveProgress();
-    showMessage(`이동식 제작대 Lv ${crafted.portableWorkbench} 제작 완료`);
+    showMessage(`제작 기술 Lv ${crafted.craftTech} 연구 완료`);
     return;
   }
 
@@ -1462,21 +1540,25 @@ function craft(item) {
     installBaseWorkbenchIfUnlocked();
     rebuildWorld();
     saveProgress();
-    showMessage("제작대 제작 완료. 기본 위치에 설치되었습니다.");
+    showMessage("제작대 Lv 1 제작 완료. 기본 위치에 설치되었습니다.");
     return;
   }
-
-  if (portableLevel <= 0) {
-    showMessage("튜토리얼 자원을 모아 이동식 제작대부터 만드세요.");
-    return;
-  }
-
 
   if (item === "torch" && canCraft("torch")) {
-    spendMaterials(CRAFT_COSTS.torch);
-    lightPower = clamp(lightPower + CONFIG.torchLightGain, 0, lightMax);
+    spendMaterials(CRAFT_COSTS.torch[torchLevel]);
+    crafted.torchLevel = torchLevel + 1;
+    torchPower = clamp(torchPower, 0, getTorchMax());
     saveProgress();
-    showMessage(`횃불 사용: 빛 +${CONFIG.torchLightGain}%`);
+    showMessage("횃불 업그레이드 완료. 횃불 최대치가 늘었습니다.");
+    return;
+  }
+
+  if (item === "torchUse" && canCraft("torchUse")) {
+    spendMaterials(CRAFT_COSTS.torchUse);
+    const gain = CONFIG.torchStackGain;
+    torchPower = clamp(torchPower + gain, 0, getTorchMax());
+    saveProgress();
+    showMessage(`횃불을 만들었습니다. 횃불 +${gain}%`);
     return;
   }
 
@@ -1488,6 +1570,23 @@ function craft(item) {
     saveProgress();
     updateRenderSettings(true);
     showMessage(`랜턴 Lv ${crafted.lanternLevel} 제작/강화 완료`);
+    return;
+  }
+
+  if (item === "machineWorkbench" && canCraft("machineWorkbench")) {
+    spendMaterials(CRAFT_COSTS.machineWorkbench);
+    crafted.machineWorkbench = true;
+    saveProgress();
+    showMessage("기계 제작대 Lv 1 제작 완료");
+    return;
+  }
+
+  if (item === "machineUpgrade" && canCraft("machineUpgrade")) {
+    spendMaterials(CRAFT_COSTS.machineUpgrade[machineLevel]);
+    crafted.machineUpgrade = machineLevel + 1;
+    saveProgress();
+    const names = ["기계 업그레이드", "기계 업그레이드 I", "기계 업그레이드 II"];
+    showMessage(`${names[machineLevel] || "기계 업그레이드"} 완료`);
     return;
   }
 
@@ -1507,7 +1606,7 @@ function craft(item) {
     return;
   }
 
-  showMessage("재료가 부족하거나 현재 제작대 단계에서 만들 수 없습니다.");
+  showMessage("재료가 부족하거나 현재 제작 단계에서 만들 수 없습니다.");
 }
 
 function movePlayer(nx, ny) {
@@ -1571,7 +1670,11 @@ function updateSurvivalSystems() {
     }
 
     if (inMaze) {
-      lightPower = clamp(lightPower - CONFIG.mazeLightDecay, 0, lightMax);
+      if (torchPower > 0) {
+        torchPower = clamp(torchPower - CONFIG.torchDecay, 0, getTorchMax());
+      } else {
+        lightPower = clamp(lightPower - CONFIG.mazeLightDecay, 0, lightMax);
+      }
     } else {
       lightPower = clamp(lightPower + CONFIG.baseLightRecover, 0, lightMax);
     }
@@ -1916,6 +2019,7 @@ function draw() {
   if (getUpgradeLevel("marker") >= 2 && !mapOpen) drawMiniMap(w, h);
 
   if (mapOpen) drawFullMap(w, h);
+  if (inventoryOpen) drawInventoryPanel(w, h);
   if (showCraft) drawCraftPanel(w, h);
 }
 
@@ -1979,53 +2083,62 @@ function drawResourcePill(label, value, x0, y0, w0, color) {
 }
 
 function drawStatusBar(x0, y0, label, value, max, width, fill) {
-  ctx.fillStyle = "#aaa092";
-  ctx.font = "12px Arial";
+  const ratio = clamp(value / max, 0, 1);
+  const barH = 14;
+
+  ctx.save();
   ctx.textAlign = "left";
-  ctx.fillText(label, x0, y0 + 9);
-  drawPanel(x0 + 48, y0, width, 12, 6, "rgba(255,255,255,0.12)", null);
-  drawPanel(x0 + 48, y0, width * clamp(value / max, 0, 1), 12, 6, fill, null);
+  ctx.font = "bold 13px Arial";
+  ctx.fillStyle = "rgba(232,223,205,0.86)";
+  ctx.fillText(label, x0, y0 - 8);
+
+  roundedRectPath(x0, y0, width, barH, 7);
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.fill();
+
+  if (ratio > 0) {
+    roundedRectPath(x0, y0, Math.max(barH, width * ratio), barH, 7);
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+
+  ctx.restore();
 }
 
 function drawHUD(w, h) {
-  const panelW = 560;
-  const panelH = 128;
-  const x0 = w / 2 - panelW / 2;
-  const y0 = 18;
+  const showTorchBar = getTorchLevel() > 0 || torchPower > 0;
+  const panelW = 250;
+  const rowGap = 37;
+  const topPadding = 32;
+  const bottomPadding = 18;
+  const barCount = showTorchBar ? 4 : 3;
+  const panelH = topPadding + bottomPadding + (barCount - 1) * rowGap + 14;
+  const x0 = 30;
+  const y0 = Math.max(28, h - panelH - 48);
+  const barX = x0 + 20;
+  let barY = y0 + topPadding;
+  const barW = panelW - 40;
 
-  drawPanel(x0, y0, panelW, panelH, 8, "rgba(20,17,13,0.74)", "rgba(224,198,142,0.16)");
+  drawPanel(x0, y0, panelW, panelH, 16, "rgba(12,10,8,0.58)", "rgba(238,225,196,0.12)");
 
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#d6bd82";
-  ctx.font = "bold 13px Arial";
-  ctx.fillText(`DAY ${day}`, x0 + panelW / 2, y0 + 22);
+  if (showTorchBar) {
+    drawStatusBar(barX, barY, "횃불", torchPower, Math.max(1, getTorchMax()), barW, "#c9763f");
+    barY += rowGap;
+  }
 
-  ctx.textAlign = "left";
-  drawResourcePill("나무", inventory.wood, x0 + 18, y0 + 34, 78, "#9d6f3f");
-  drawResourcePill("돌", inventory.stone, x0 + 102, y0 + 34, 72, "#85888c");
-  drawResourcePill("수정", inventory.crystal, x0 + 180, y0 + 34, 82, "#78a9c5");
-  drawResourcePill("석탄", inventory.coal || 0, x0 + 268, y0 + 34, 78, "#393633");
+  drawStatusBar(barX, barY, "빛", lightPower, lightMax, barW, "#d5aa55");
+  barY += rowGap;
+  drawStatusBar(barX, barY, "정신력", sanity, sanityMax, barW, "#9daec7");
+  barY += rowGap;
+  drawStatusBar(barX, barY, "기력", stamina, staminaMax, barW, "#c4b58a");
 
-  drawStatusBar(x0 + 360, y0 + 38, "기력", stamina, staminaMax, 124, "#cbbf9d");
-  drawStatusBar(x0 + 360, y0 + 62, "정신력", sanity, sanityMax, 124, "#9fb5d8");
-  drawStatusBar(x0 + 360, y0 + 86, "빛", lightPower, lightMax, 124, "#e0b55d");
-
-  ctx.textAlign = "center";
-  ctx.fillStyle = "rgba(255,255,255,0.45)";
-  ctx.font = "11px Arial";
-  ctx.fillText(gathering ? "채집 중" : `${formatKey(controls.interact)} 상호작용`, x0 + 108, y0 + 96);
-  ctx.fillText(`${formatKey(controls.map)} 지도`, x0 + 218, y0 + 96);
-  ctx.fillText(`${formatKey(controls.craft)} 제작`, x0 + 318, y0 + 96);
-  ctx.fillText(`${crafted.workbench ? "제작대 설치됨" : "제작대 없음"} / 이동식 Lv ${getPortableWorkbenchLevel()} / 랜턴 Lv ${getLanternLevel()}${debugInfiniteLantern ? " / 무한" : ""}`, x0 + 218, y0 + 116);
-  ctx.textAlign = "left";
-
-  ctx.strokeStyle = "rgba(255,255,255,0.85)";
+  ctx.strokeStyle = "rgba(255,255,255,0.58)";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(w / 2 - 8, h / 2);
-  ctx.lineTo(w / 2 + 8, h / 2);
-  ctx.moveTo(w / 2, h / 2 - 8);
-  ctx.lineTo(w / 2, h / 2 + 8);
+  ctx.moveTo(w / 2 - 7, h / 2);
+  ctx.lineTo(w / 2 + 7, h / 2);
+  ctx.moveTo(w / 2, h / 2 - 7);
+  ctx.lineTo(w / 2, h / 2 + 7);
   ctx.stroke();
 
   const target = getTileAhead();
@@ -2038,15 +2151,52 @@ function drawHUD(w, h) {
   if (target.tile !== TILE.EMPTY && target.tile !== TILE.WALL) {
     const text = getInteractionText(target);
     ctx.font = "bold 14px Arial";
-    const boxW = Math.max(190, ctx.measureText(text).width + 46);
+    const boxW = Math.max(172, ctx.measureText(text).width + 38);
     const boxX = w / 2 - boxW / 2;
 
-    drawPanel(boxX, h - 82, boxW, 38, 8, "rgba(18,15,11,0.72)", "rgba(226,206,160,0.18)");
-    ctx.fillStyle = "#eee";
+    drawPanel(boxX, h - 82, boxW, 38, 10, "rgba(14,12,9,0.58)", "rgba(226,206,160,0.12)");
+    ctx.fillStyle = "rgba(240,232,214,0.92)";
     ctx.textAlign = "center";
     ctx.fillText(text, w / 2, h - 58);
     ctx.textAlign = "left";
   }
+}
+
+function drawInventoryPanel(w, h) {
+  const boxW = 278;
+  const boxH = 236;
+  const x0 = 24;
+  const y0 = Math.max(26, h / 2 - boxH / 2);
+  const items = [
+    ["나무", inventory.wood || 0],
+    ["돌", inventory.stone || 0],
+    ["수정", inventory.crystal || 0],
+    ["석탄", inventory.coal || 0]
+  ];
+
+  drawPanel(x0, y0, boxW, boxH, 16, "rgba(13,11,8,0.78)", "rgba(238,225,196,0.12)");
+  ctx.fillStyle = "#e6d7b8";
+  ctx.font = "bold 20px Arial";
+  ctx.textAlign = "left";
+  ctx.fillText("소지품", x0 + 22, y0 + 38);
+
+  ctx.font = "15px Arial";
+  for (let i = 0; i < items.length; i++) {
+    const rowY = y0 + 74 + i * 36;
+    ctx.fillStyle = "rgba(255,255,255,0.055)";
+    roundedRectPath(x0 + 18, rowY - 19, boxW - 36, 28, 8);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(238,225,196,0.88)";
+    ctx.fillText(items[i][0], x0 + 34, rowY);
+    ctx.textAlign = "right";
+    ctx.fillText(String(items[i][1]), x0 + boxW - 34, rowY);
+    ctx.textAlign = "left";
+  }
+
+  ctx.fillStyle = "rgba(238,225,196,0.46)";
+  ctx.font = "12px Arial";
+  ctx.fillText("I 닫기", x0 + 22, y0 + boxH - 22);
 }
 
 function drawGatherProgress(w, h) {
@@ -2200,103 +2350,127 @@ function drawMiniMap(w, h) {
 }
 
 function drawCraftRow(x0, y0, key, title, cost, note, done) {
-  drawPanel(x0, y0, 376, 48, 8, done ? "rgba(114,120,90,0.18)" : "rgba(255,255,255,0.055)", "rgba(255,255,255,0.07)");
+  drawPanel(x0, y0, 394, 42, 10, done ? "rgba(120,126,96,0.12)" : "rgba(255,255,255,0.045)", "rgba(255,255,255,0.055)");
 
-  drawPanel(x0 + 12, y0 + 12, 24, 24, 7, done ? "rgba(196,210,156,0.22)" : "rgba(221,190,118,0.18)", "rgba(255,255,255,0.08)");
-  ctx.fillStyle = done ? "#cbd79a" : "#e2c47c";
-  ctx.font = "bold 13px Arial";
+  ctx.fillStyle = "rgba(214,188,128,0.15)";
+  roundedRectPath(x0 + 10, y0 + 9, 24, 24, 7);
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(230,215,184,0.88)";
+  ctx.font = "bold 12px Arial";
   ctx.textAlign = "center";
-  ctx.fillText(key, x0 + 24, y0 + 29);
+  ctx.fillText(key, x0 + 22, y0 + 26);
 
   ctx.textAlign = "left";
-  ctx.fillStyle = "#eee1cc";
+  ctx.fillStyle = "rgba(238,225,196,0.92)";
   ctx.font = "bold 13px Arial";
-  ctx.fillText(title, x0 + 48, y0 + 19);
+  ctx.fillText(title, x0 + 44, y0 + 17);
 
-  ctx.fillStyle = "#b7aa96";
-  ctx.font = "12px Arial";
-  ctx.fillText(done ? note : cost, x0 + 48, y0 + 36);
+  ctx.fillStyle = "rgba(238,225,196,0.48)";
+  ctx.font = "11px Arial";
+  ctx.fillText(done ? note : `${cost} · ${note}`, x0 + 44, y0 + 32);
+}
+
+function getMachineUpgradeName(level) {
+  if (level <= 0) return "기계 업그레이드";
+  if (level === 1) return "기계 업그레이드 I";
+  return "기계 업그레이드 II";
+}
+
+function getVisibleCraftRows() {
+  const rows = [];
+  const techLevel = getCraftTechLevel();
+  const torchLevel = getTorchLevel();
+  const lanternLevel = getLanternLevel();
+  const machineLevel = getMachineUpgradeLevel();
+  const bootsLevel = getUpgradeLevel("boots");
+  const markerLevel = getUpgradeLevel("marker");
+
+  function add(item, title, cost, note, done = false) {
+    rows.push({ item, title, cost, note, done });
+  }
+
+  if (isCraftUnlocked("craftTech")) {
+    const techNames = ["제작 기술 연구", "제작 기술 심화", "제작 기술 확장", "제작 기술 완성"];
+    const notes = ["기본 제작을 익힙니다", "제작대를 만들 수 있습니다", "랜턴과 추가 제작품을 열 수 있습니다", "기계 제작 계열을 열 수 있습니다"];
+    add("craftTech", techNames[techLevel] || "제작 기술", formatCost(CRAFT_COSTS.craftTech[techLevel]), notes[techLevel] || "새 제작품 해금");
+  }
+
+  if (isCraftUnlocked("torchUse")) {
+    add("torchUse", "횃불 만들기", formatCost(CRAFT_COSTS.torchUse), `횃불 ${Math.round(torchPower)}/${getTorchMax()}`);
+  }
+
+  if (isCraftUnlocked("torch")) {
+    const names = ["횃불 업그레이드 I", "횃불 업그레이드 II"];
+    add("torch", names[torchLevel] || "횃불 업그레이드", formatCost(CRAFT_COSTS.torch[torchLevel]), "횃불 최대치 증가");
+  }
+
+  if (isCraftUnlocked("workbench")) {
+    add("workbench", "제작대", formatCost(CRAFT_COSTS.workbench), "메인공간 기본 위치에 설치");
+  }
+
+  if (isCraftUnlocked("machineWorkbench")) {
+    add("machineWorkbench", "기계 제작대", formatCost(CRAFT_COSTS.machineWorkbench), "기계 업그레이드 해금");
+  }
+
+  if (isCraftUnlocked("machineUpgrade")) {
+    const names = ["기계 최대치 업그레이드 I", "기계 회복 속도 업그레이드 I", "기계 업그레이드 II"];
+    add("machineUpgrade", names[machineLevel] || "기계 업그레이드", formatCost(CRAFT_COSTS.machineUpgrade[machineLevel]), "기계 제작 기능 향상");
+  }
+
+  if (isCraftUnlocked("lantern")) {
+    const names = ["랜턴", "랜턴 보강"];
+    add("lantern", names[lanternLevel] || "랜턴", formatCost(CRAFT_COSTS.lantern[lanternLevel]), "석탄으로 빛 유지");
+  }
+
+  if (isCraftUnlocked("boots") && bootsLevel < CRAFT_COSTS.boots.length) {
+    add("boots", "다른 아이템", formatCost(getNextUpgradeCost("boots")), "이동 보조 제작품");
+  }
+
+  if (isCraftUnlocked("marker") && markerLevel < CRAFT_COSTS.marker.length) {
+    add("marker", "지도 보강", formatCost(getNextUpgradeCost("marker")), markerLevel + 1 >= 2 ? "미니맵 활성화" : "내 위치 표시");
+  }
+
+  return rows;
 }
 
 function drawCraftPanel(w, h) {
-  const portableLevel = getPortableWorkbenchLevel();
-  const lanternLevel = getLanternLevel();
-  const boxW = 456;
-  const boxH = 494;
-  const x0 = w / 2 - boxW / 2;
+  const rows = getVisibleCraftRows();
+  craftHotkeys = {};
+
+  const rowH = 50;
+  const boxW = 430;
+  const boxH = Math.min(h - 54, 88 + Math.max(1, rows.length) * rowH + 34);
+  const x0 = Math.max(24, w - boxW - 28);
   const y0 = 28;
-  const title = portableLevel <= 0
-    ? "간이 제작"
-    : (crafted.workbench === true && scene === "base" ? "제작대" : `이동식 제작대 Lv ${portableLevel}`);
 
-  drawPanel(x0, y0, boxW, boxH, 8, "rgba(19,16,12,0.88)", "rgba(224,198,142,0.2)");
+  drawPanel(x0, y0, boxW, boxH, 16, "rgba(13,11,8,0.78)", "rgba(238,225,196,0.12)");
 
-  ctx.fillStyle = "#d8bd78";
-  ctx.font = "bold 18px Arial";
-  ctx.fillText(title, x0 + 22, y0 + 34);
+  ctx.fillStyle = "#e6d7b8";
+  ctx.font = "bold 20px Arial";
+  ctx.textAlign = "left";
+  ctx.fillText("제작", x0 + 22, y0 + 36);
 
-  ctx.fillStyle = "#aaa092";
+  ctx.fillStyle = "rgba(238,225,196,0.50)";
   ctx.font = "12px Arial";
-  ctx.fillText("숫자키로 제작", x0 + 346, y0 + 34);
+  ctx.fillText("조건을 만족한 작업만 표시됩니다", x0 + 22, y0 + 56);
 
-  const bootsLevel = getUpgradeLevel("boots");
-  const markerLevel = getUpgradeLevel("marker");
-  const portableMax = portableLevel >= CRAFT_COSTS.portableWorkbench.length;
-  const lanternMax = lanternLevel >= CRAFT_COSTS.lantern.length;
+  if (rows.length === 0) {
+    ctx.fillStyle = "rgba(238,225,196,0.70)";
+    ctx.font = "13px Arial";
+    ctx.fillText("지금 만들 수 있는 것이 없습니다.", x0 + 22, y0 + 92);
+  }
 
-  drawCraftRow(
-    x0 + 22,
-    y0 + 58,
-    "1",
-    `이동식 제작대 Lv ${portableLevel}/${CRAFT_COSTS.portableWorkbench.length}`,
-    formatCost(CRAFT_COSTS.portableWorkbench[portableLevel]),
-    portableLevel <= 0 ? "튜토리얼 첫 제작" : "제작 기능 확장",
-    portableMax
-  );
-  drawCraftRow(
-    x0 + 22,
-    y0 + 114,
-    "2",
-    "제작대",
-    formatCost(CRAFT_COSTS.workbench),
-    portableLevel <= 0 ? "이동식 제작대 필요" : "기본 위치에 설치됨",
-    crafted.workbench === true
-  );
-  drawCraftRow(x0 + 22, y0 + 170, "3", "횃불 사용", formatCost(CRAFT_COSTS.torch), `빛 +${CONFIG.torchLightGain}%`, false);
-  drawCraftRow(
-    x0 + 22,
-    y0 + 226,
-    "4",
-    `랜턴 Lv ${lanternLevel}/${CRAFT_COSTS.lantern.length}`,
-    formatCost(CRAFT_COSTS.lantern[lanternLevel]),
-    lanternMax ? "최대 강화" : "석탄 소모 간격 증가",
-    lanternMax
-  );
-  drawCraftRow(
-    x0 + 22,
-    y0 + 282,
-    "5",
-    `러너 부츠 Lv ${bootsLevel}/${CRAFT_COSTS.boots.length}`,
-    formatCost(getNextUpgradeCost("boots")),
-    `이동속도 +${bootsLevel * 5}%`,
-    bootsLevel >= CRAFT_COSTS.boots.length
-  );
-  drawCraftRow(
-    x0 + 22,
-    y0 + 338,
-    "6",
-    `지도 업그레이드 Lv ${markerLevel}/${CRAFT_COSTS.marker.length}`,
-    formatCost(getNextUpgradeCost("marker")),
-    markerLevel >= 2 ? "미니맵 활성화" : "내 위치 표시",
-    markerLevel >= CRAFT_COSTS.marker.length
-  );
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const key = String((i % 9) + 1);
+    craftHotkeys[`Digit${key}`] = row.item;
+    drawCraftRow(x0 + 18, y0 + 78 + i * rowH, key, row.title, row.cost, row.note, row.done);
+  }
 
-  ctx.fillStyle = "#bdbdbd";
+  ctx.fillStyle = "rgba(238,225,196,0.42)";
   ctx.font = "12px Arial";
-  const guide = portableLevel <= 0
-    ? "기본 방의 재료를 모아 이동식 제작대부터 만드세요."
-    : (crafted.workbench !== true ? "이동식 제작대로 고정 제작대를 만들 수 있습니다." : `${formatKey(controls.craft)} 닫기`);
-  ctx.fillText(guide, x0 + 22, y0 + 468);
+  ctx.fillText("C 닫기", x0 + 22, y0 + boxH - 18);
 }
 
 function gameLoop() {
@@ -2312,7 +2486,7 @@ startBtn.addEventListener("click", () => {
   loadSettings();
   generateMaze();
   requestGamePointerLock();
-  showMessage("C로 제작창을 열고, 방 안 자원으로 이동식 제작대 Lv1을 먼저 만드세요.");
+  showMessage("C로 제작창을 열고, 방 안 자원으로 제작 기술 Lv1부터 연구하세요.");
 });
 
 closeSettingsBtn.addEventListener("click", closeSettings);
@@ -2347,10 +2521,10 @@ fillTestBtn.addEventListener("click", () => {
   testMarker.value = String(CRAFT_COSTS.marker.length);
   if (testWorkbench) testWorkbench.checked = true;
   if (testLantern) testLantern.value = String(CRAFT_COSTS.lantern.length);
-  if (testPortableWorkbench) testPortableWorkbench.value = String(CRAFT_COSTS.portableWorkbench.length);
+  if (testPortableWorkbench) testPortableWorkbench.value = String(CRAFT_COSTS.craftTech.length);
   if (testInfiniteLantern) testInfiniteLantern.checked = true;
   applyTestValues();
-  showMessage("테스트 값 적용 - 이동식 제작대 포함");
+  showMessage("테스트 값 적용 - 제작 기술 테크트리 포함");
 });
 
 sensitivitySlider.addEventListener("input", () => {
@@ -2407,8 +2581,16 @@ window.addEventListener("keydown", (e) => {
 
   if (testOpen) return;
 
+  if (e.code === "KeyI") {
+    inventoryOpen = !inventoryOpen;
+    showCraft = false;
+    mapOpen = false;
+    return;
+  }
+
   if (e.code === controls.map) {
     mapOpen = !mapOpen;
+    inventoryOpen = false;
     return;
   }
 
@@ -2424,16 +2606,13 @@ window.addEventListener("keydown", (e) => {
 
   if (e.code === controls.craft) {
     showCraft = !showCraft;
+    inventoryOpen = false;
     return;
   }
 
-  if (showCraft) {
-    if (e.code === "Digit1") craft("portableWorkbench");
-    if (e.code === "Digit2") craft("workbench");
-    if (e.code === "Digit3") craft("torch");
-    if (e.code === "Digit4") craft("lantern");
-    if (e.code === "Digit5") craft("boots");
-    if (e.code === "Digit6") craft("marker");
+  if (showCraft && craftHotkeys[e.code]) {
+    craft(craftHotkeys[e.code]);
+    return;
   }
 
   keys[e.code] = true;
