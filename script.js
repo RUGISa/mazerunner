@@ -71,6 +71,7 @@ const ambientLight = new THREE.AmbientLight(0x373029, 0.55);
 scene3d.add(ambientLight);
 
 let worldRoot = null;
+let heldTorch = null;
 let renderPixelRatio = 1;
 const doorVisuals = new Map();
 const DOOR_OPEN_ANGLE = Math.PI * 0.52;
@@ -113,8 +114,128 @@ const materials = {
   exit: new THREE.MeshStandardMaterial({ color: 0xd76b51, emissive: 0x9c2a18, emissiveIntensity: 1.2, roughness: 0.45, metalness: 0.02, transparent: true, opacity: 0.84 })
 };
 
+heldTorch = createHeldTorchRig();
+camera.add(heldTorch.group);
+camera.add(heldTorch.light);
+
 const keys = {};
 const mouse = { dx: 0, dy: 0 };
+
+function createHeldTorchRig() {
+  const group = new THREE.Group();
+  group.visible = false;
+  group.position.set(0.42, -0.42, -0.7);
+  group.rotation.set(0.16, -0.22, -0.18);
+
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.024, 0.034, 0.66, 12),
+    materials.wood
+  );
+  shaft.position.set(0, -0.08, 0);
+  group.add(shaft);
+
+  const grip = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.033, 0.033, 0.22, 12),
+    materials.workbench
+  );
+  grip.position.set(0, -0.27, 0);
+  group.add(grip);
+
+  const pommel = new THREE.Mesh(
+    new THREE.SphereGeometry(0.036, 12, 12),
+    materials.doorMetal
+  );
+  pommel.position.set(0, -0.4, 0);
+  group.add(pommel);
+
+  const headRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.054, 0.007, 8, 20),
+    materials.doorMetal
+  );
+  headRing.position.set(0, 0.21, 0);
+  headRing.rotation.x = Math.PI / 2;
+  group.add(headRing);
+
+  for (let i = 0; i < 4; i++) {
+    const bar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.007, 0.007, 0.18, 8),
+      materials.doorMetal
+    );
+    const angle = (Math.PI * 2 * i) / 4;
+    bar.position.set(Math.cos(angle) * 0.045, 0.29, Math.sin(angle) * 0.045);
+    group.add(bar);
+  }
+
+  const capRing = headRing.clone();
+  capRing.position.y = 0.38;
+  group.add(capRing);
+
+  const emberMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffcc7a,
+    emissive: 0xff8a1f,
+    emissiveIntensity: 2.3,
+    roughness: 0.15,
+    metalness: 0.0,
+    transparent: true,
+    opacity: 0.95
+  });
+
+  const coalBed = new THREE.Mesh(new THREE.SphereGeometry(0.05, 12, 12), emberMaterial);
+  coalBed.position.set(0, 0.28, 0);
+  coalBed.scale.set(1.0, 0.75, 1.0);
+  group.add(coalBed);
+
+  const sparks = [];
+  for (let i = 0; i < 6; i++) {
+    const sparkMat = emberMaterial.clone();
+    sparkMat.opacity = 0.8;
+    const spark = new THREE.Mesh(new THREE.SphereGeometry(0.009 + (i % 3) * 0.002, 8, 8), sparkMat);
+    spark.position.set(0, 0.35 + i * 0.015, 0);
+    group.add(spark);
+    sparks.push(spark);
+  }
+
+  const glow = new THREE.PointLight(0xffa13a, 0.0, 8.0, 1.9);
+  glow.position.set(0.01, 0.31, 0.0);
+  glow.visible = false;
+
+  return { group, coalBed, sparks, light: glow };
+}
+
+function updateHeldTorchVisual() {
+  if (!heldTorch) return;
+
+  const active = gameStarted && torchPower > 0;
+  heldTorch.group.visible = active;
+  heldTorch.light.visible = active;
+  if (!active) return;
+
+  const t = performance.now() * 0.001;
+  const torchRatio = clamp(torchPower / Math.max(1, getTorchMax()), 0, 1);
+  const sway = Math.sin(t * 1.8) * 0.003;
+  const pulse = 0.96 + Math.sin(t * 8.5) * 0.025;
+
+  heldTorch.group.position.set(0.42 + sway, -0.42 + Math.cos(t * 2.1) * 0.0025, -0.7);
+  heldTorch.group.rotation.set(0.15 + Math.sin(t * 1.7) * 0.008, -0.22, -0.18 + sway * 2.2);
+
+  heldTorch.coalBed.scale.set(1.0 + Math.sin(t * 7.0) * 0.02, 0.74 + pulse * 0.03, 1.0 + Math.cos(t * 6.0) * 0.02);
+
+  if (Array.isArray(heldTorch.sparks)) {
+    heldTorch.sparks.forEach((spark, index) => {
+      const phase = t * (1.8 + index * 0.22) + index * 0.9;
+      const loop = (phase % 1.0);
+      spark.position.x = Math.sin(phase * 3.1) * (0.008 + index * 0.0015);
+      spark.position.y = 0.34 + loop * (0.18 + index * 0.01);
+      spark.position.z = Math.cos(phase * 2.7) * (0.01 + index * 0.0012);
+      const scale = 0.6 + (1.0 - loop) * 0.9;
+      spark.scale.setScalar(scale);
+      spark.material.opacity = 0.85 * (1.0 - loop);
+    });
+  }
+
+  heldTorch.light.intensity = 0.85 + torchRatio * 0.95 + Math.sin(t * 10.0) * 0.04;
+  heldTorch.light.distance = 7.0 + torchRatio * 2.0;
+}
 
 const DEFAULT_CONTROLS = {
   forward: "KeyW",
@@ -156,27 +277,69 @@ const RESOURCE_NAMES = {
 };
 
 const CRAFT_COSTS = {
-  // 더 이상 이동식 제작대로 시작하지 않는다. 처음 해금은 제작 기술 Lv1이다.
-  portableWorkbench: [
-    { wood: 2, stone: 1, crystal: 1 }
-  ],
   craftTech: [
     { wood: 1, stone: 1 },
     { wood: 2, stone: 2 },
     { wood: 3, stone: 2, crystal: 1 },
-    { wood: 4, stone: 3, crystal: 2, coal: 2 }
+    { wood: 4, stone: 3, crystal: 2, coal: 2 },
+    { wood: 5, stone: 4, crystal: 3, coal: 3 }
   ],
-  workbench: { wood: 3, stone: 2, coal: 1 },
-  machineWorkbench: { wood: 4, stone: 4, coal: 2 },
-  machineUpgrade: [
+  workbench: [
+    { wood: 3, stone: 2, coal: 1 },
+    { wood: 4, stone: 3, coal: 2 },
+    { wood: 5, stone: 4, crystal: 2, coal: 3 }
+  ],
+  gemCrafter: [
+    { stone: 3, crystal: 2, coal: 1 },
+    { stone: 4, crystal: 3, coal: 2 },
+    { stone: 5, crystal: 4, coal: 3 }
+  ],
+  accessory: [
+    { crystal: 2, coal: 1 },
+    { crystal: 2, stone: 2, coal: 1 },
+    { crystal: 3, stone: 2, coal: 2 },
+    { crystal: 3, stone: 3, coal: 2 },
+    { crystal: 4, stone: 3, coal: 3 }
+  ],
+  gemPolisher: [
+    { stone: 4, crystal: 3, coal: 2 }
+  ],
+  manualCrafter: [
+    { wood: 3, stone: 3, crystal: 1 }
+  ],
+  restStone: [
+    { stone: 5, crystal: 3, coal: 2 }
+  ],
+  potionWorkbench: [
+    { wood: 3, stone: 2, crystal: 2 }
+  ],
+  basicSanityPotion: [
+    { crystal: 1, coal: 1 }
+  ],
+  manualExtractor: [
+    { wood: 3, stone: 4, coal: 1 }
+  ],
+  mysteryDevice: [
+    { stone: 5, crystal: 3, coal: 4 },
+    { stone: 6, crystal: 4, coal: 5 }
+  ],
+  machineWorkbench: [
+    { wood: 4, stone: 4, coal: 2 }
+  ],
+  machineMaxUpgrade: [
     { stone: 3, coal: 2 },
     { stone: 4, crystal: 1, coal: 3 },
     { stone: 6, crystal: 2, coal: 4 }
   ],
+  machineRecoveryUpgrade: [
+    { stone: 4, crystal: 1, coal: 2 },
+    { stone: 5, crystal: 2, coal: 3 }
+  ],
   // torch는 최대치 강화, torchUse는 실제 횃불 제작이다.
   torch: [
     { wood: 2, coal: 1 },
-    { wood: 2, coal: 2, crystal: 1 }
+    { wood: 2, coal: 2, crystal: 1 },
+    { wood: 3, coal: 3, crystal: 2 }
   ],
   torchUse: { wood: 1, coal: 1 },
   lantern: [
@@ -191,6 +354,14 @@ const CRAFT_COSTS = {
   marker: [
     { stone: 2, crystal: 1 },
     { stone: 4, crystal: 2 }
+  ],
+  portableWorkbench: [
+    { wood: 2, stone: 1, crystal: 1 }
+  ],
+  machineUpgrade: [
+    { stone: 3, coal: 2 },
+    { stone: 4, crystal: 1, coal: 3 },
+    { stone: 6, crystal: 2, coal: 4 }
   ]
 };
 
@@ -288,11 +459,23 @@ let crafted = {
   map: true,
   marker: 0,
   workbench: false,
+  workbenchLevel: 0,
+  gemCrafter: 0,
+  accessory: 0,
+  gemPolisher: 0,
   portableWorkbench: 0,
   craftTech: 0,
   torchLevel: 0,
   machineWorkbench: false,
-  machineUpgrade: 0
+  machineUpgrade: 0,
+  machineMaxUpgrade: 0,
+  machineRecoveryUpgrade: 0,
+  manualCrafter: 0,
+  restStone: 0,
+  potionWorkbench: 0,
+  basicSanityPotion: 0,
+  manualExtractor: 0,
+  mysteryDevice: 0
 };
 
 let messageTimer = 0;
@@ -531,10 +714,20 @@ function normalizeCraftedProgress() {
   lightPower = clamp(Number(lightPower) || 0, 0, getLightMax());
   crafted.machineWorkbench = crafted.machineWorkbench === true;
   crafted.machineUpgrade = clamp(Number(crafted.machineUpgrade) || 0, 0, CRAFT_COSTS.machineUpgrade.length);
+  crafted.machineMaxUpgrade = clamp(Number(crafted.machineMaxUpgrade) || Number(crafted.machineUpgrade) || 0, 0, CRAFT_COSTS.machineMaxUpgrade.length);
+  crafted.machineRecoveryUpgrade = clamp(Number(crafted.machineRecoveryUpgrade) || 0, 0, CRAFT_COSTS.machineRecoveryUpgrade.length);
+  crafted.workbenchLevel = clamp(Number(crafted.workbenchLevel) || (crafted.workbench === true ? 1 : 0), 0, CRAFT_COSTS.workbench.length);
+  crafted.manualCrafter = clamp(Number(crafted.manualCrafter) || 0, 0, CRAFT_COSTS.manualCrafter.length);
+  crafted.restStone = clamp(Number(crafted.restStone) || 0, 0, CRAFT_COSTS.restStone.length);
+  crafted.potionWorkbench = clamp(Number(crafted.potionWorkbench) || 0, 0, CRAFT_COSTS.potionWorkbench.length);
+  crafted.basicSanityPotion = clamp(Number(crafted.basicSanityPotion) || 0, 0, CRAFT_COSTS.basicSanityPotion.length);
+  crafted.manualExtractor = clamp(Number(crafted.manualExtractor) || 0, 0, CRAFT_COSTS.manualExtractor.length);
+  crafted.mysteryDevice = clamp(Number(crafted.mysteryDevice) || 0, 0, CRAFT_COSTS.mysteryDevice.length);
 
   // v10부터 이동식 제작대와 고정 제작대는 완전히 분리한다.
   // 이전 저장의 hasWorkbench만 고정 제작대로 인정하고, portableWorkbench는 휴대용 단계로만 유지한다.
-  crafted.workbench = crafted.workbench === true || crafted.hasWorkbench === true;
+  crafted.workbench = crafted.workbench === true || crafted.hasWorkbench === true || crafted.workbenchLevel > 0;
+  if (crafted.workbench && crafted.workbenchLevel <= 0) crafted.workbenchLevel = 1;
   delete crafted.hasWorkbench;
   crafted.map = true;
 }
@@ -570,7 +763,7 @@ function loadProgress() {
     collectedResources = {};
     exploredTiles = {};
     doorStates = {};
-    crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, portableWorkbench: 0, craftTech: 0, torchLevel: 0, machineWorkbench: false, machineUpgrade: 0 };
+    crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, workbenchLevel: 0, gemCrafter: 0, accessory: 0, gemPolisher: 0, portableWorkbench: 0, craftTech: 0, torchLevel: 0, machineWorkbench: false, machineUpgrade: 0, machineMaxUpgrade: 0, machineRecoveryUpgrade: 0, manualCrafter: 0, restStone: 0, potionWorkbench: 0, basicSanityPotion: 0, manualExtractor: 0, mysteryDevice: 0 };
   }
 }
 
@@ -674,7 +867,7 @@ function resetGameProgress() {
   collectedResources = {};
   exploredTiles = {};
   doorStates = {};
-  crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, portableWorkbench: 0, craftTech: 0, torchLevel: 0, machineWorkbench: false, machineUpgrade: 0 };
+  crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, workbenchLevel: 0, gemCrafter: 0, accessory: 0, gemPolisher: 0, portableWorkbench: 0, craftTech: 0, torchLevel: 0, machineWorkbench: false, machineUpgrade: 0, machineMaxUpgrade: 0, machineRecoveryUpgrade: 0, manualCrafter: 0, restStone: 0, potionWorkbench: 0, basicSanityPotion: 0, manualExtractor: 0, mysteryDevice: 0 };
 
   generateMaze();
   saveProgress();
@@ -861,8 +1054,15 @@ function wouldDoorBlockPlayer(tx, ty) {
   return circleOverlapsTile(x, y, tx, ty, CONFIG.playerRadius + 0.06);
 }
 
+function getTorchRatio() {
+  const maxTorch = Math.max(1, getTorchMax());
+  return clamp(torchPower / maxTorch, 0, 1);
+}
+
 function getLightRatio() {
-  return clamp(lightPower / getLightMax(), 0, 1);
+  const lightRatio = clamp(lightPower / getLightMax(), 0, 1);
+  const torchRatio = getTorchRatio();
+  return clamp(Math.max(lightRatio, torchRatio), 0, 1);
 }
 
 function getPortableWorkbenchLevel() {
@@ -1135,7 +1335,7 @@ function getBaseWorkbenchTile() {
 }
 
 function installBaseWorkbenchIfUnlocked() {
-  if (crafted.workbench !== true) return false;
+  if (getWorkbenchLevel() < 1) return false;
 
   const pos = getBaseWorkbenchTile();
   if (!pos) return false;
@@ -1383,7 +1583,7 @@ function interact() {
   }
 
   if (target.tile === TILE.WORKBENCH) {
-    if (crafted.workbench !== true) {
+    if (getWorkbenchLevel() < 1) {
       showMessage("제작 기술 Lv2를 연구한 뒤 제작대를 만들 수 있습니다.");
       return;
     }
@@ -1416,7 +1616,7 @@ function canOpenCraftPanel() {
 }
 
 function canUseMainWorkbench() {
-  return scene === "base" && crafted.workbench === true;
+  return scene === "base" && getWorkbenchLevel() >= 1;
 }
 
 function canUsePortableWorkbench() {
@@ -1476,7 +1676,7 @@ function getTorchLevel() {
 
 function getTorchMax() {
   if (getCraftTechLevel() < 1) return 0;
-  const torchMaxByLevel = [180, 250, 300];
+  const torchMaxByLevel = [180, 250, 300, 360];
   return torchMaxByLevel[getTorchLevel()] || torchMaxByLevel[torchMaxByLevel.length - 1];
 }
 
@@ -1515,107 +1715,246 @@ function getMachineUpgradeLevel() {
   return clamp(Number(crafted.machineUpgrade) || 0, 0, CRAFT_COSTS.machineUpgrade.length);
 }
 
+function getWorkbenchLevel() {
+  return clamp(Number(crafted.workbenchLevel) || (crafted.workbench === true ? 1 : 0), 0, CRAFT_COSTS.workbench.length);
+}
+
+function getGemCrafterLevel() {
+  return clamp(Number(crafted.gemCrafter) || 0, 0, CRAFT_COSTS.gemCrafter.length);
+}
+
+function getAccessoryLevel() {
+  return clamp(Number(crafted.accessory) || 0, 0, CRAFT_COSTS.accessory.length);
+}
+
+function getGemPolisherLevel() {
+  return clamp(Number(crafted.gemPolisher) || 0, 0, CRAFT_COSTS.gemPolisher.length);
+}
+
+function getSanityMax() {
+  let bonus = 0;
+  const accessoryLevel = getAccessoryLevel();
+  if (accessoryLevel >= 1) bonus += 10;
+  if (accessoryLevel >= 3) bonus += 10;
+  if (accessoryLevel >= 5) bonus += 10;
+  if (getGemPolisherLevel() >= 1) bonus += 10;
+  return 100 + bonus;
+}
+
+function getSanityDrainPerFrame() {
+  let drain = CONFIG.sanityDrainAtDark;
+  if (getRestStoneLevel() >= 1) drain *= 0.85;
+  const accessoryLevel = getAccessoryLevel();
+  if (accessoryLevel >= 2) drain *= 0.92;
+  if (accessoryLevel >= 4) drain *= 0.92;
+  if (getGemPolisherLevel() >= 1) drain *= 0.9;
+  return drain;
+}
+
+function getWalkSpeed() {
+  return CONFIG.walkSpeed * (getRestStoneLevel() >= 1 ? 1.08 : 1);
+}
+
+function getRunSpeed() {
+  return CONFIG.runSpeed * (getRestStoneLevel() >= 1 ? 1.06 : 1);
+}
+
+function getMachineMaxUpgradeLevel() {
+  return clamp(Number(crafted.machineMaxUpgrade) || 0, 0, CRAFT_COSTS.machineMaxUpgrade.length);
+}
+
+function getMachineRecoveryUpgradeLevel() {
+  return clamp(Number(crafted.machineRecoveryUpgrade) || 0, 0, CRAFT_COSTS.machineRecoveryUpgrade.length);
+}
+
+function getManualCrafterLevel() {
+  return clamp(Number(crafted.manualCrafter) || 0, 0, CRAFT_COSTS.manualCrafter.length);
+}
+
+function getRestStoneLevel() {
+  return clamp(Number(crafted.restStone) || 0, 0, CRAFT_COSTS.restStone.length);
+}
+
+function getPotionWorkbenchLevel() {
+  return clamp(Number(crafted.potionWorkbench) || 0, 0, CRAFT_COSTS.potionWorkbench.length);
+}
+
+function getBasicSanityPotionLevel() {
+  return clamp(Number(crafted.basicSanityPotion) || 0, 0, CRAFT_COSTS.basicSanityPotion.length);
+}
+
+function getManualExtractorLevel() {
+  return clamp(Number(crafted.manualExtractor) || 0, 0, CRAFT_COSTS.manualExtractor.length);
+}
+
+function getMysteryDeviceLevel() {
+  return clamp(Number(crafted.mysteryDevice) || 0, 0, CRAFT_COSTS.mysteryDevice.length);
+}
+
 function isCraftUnlocked(item) {
   const techLevel = getCraftTechLevel();
   const torchLevel = getTorchLevel();
   const lanternLevel = getLanternLevel();
-  const machineLevel = getMachineUpgradeLevel();
+  const workbenchLevel = getWorkbenchLevel();
 
-  // 시작은 이동식 제작대가 아니라 제작 기술 Lv1이다.
   if (item === "craftTech") return techLevel < CRAFT_COSTS.craftTech.length;
-
-  // 제작 기술 Lv1 이후부터 횃불 제작이 먼저 열리고, 횃불 업그레이드는 최대치를 늘린다.
   if (item === "torchUse") return techLevel >= 1 && torchPower < getTorchMax();
   if (item === "torch") return techLevel >= 1 && torchLevel < CRAFT_COSTS.torch.length;
 
-  if (item === "workbench") return techLevel >= 2 && crafted.workbench !== true;
-  if (item === "machineWorkbench") return crafted.workbench === true && crafted.machineWorkbench !== true;
-  if (item === "machineUpgrade") return crafted.machineWorkbench === true && machineLevel < CRAFT_COSTS.machineUpgrade.length;
-  if (item === "lantern") return techLevel >= 3 && lanternLevel < Math.min(techLevel - 2, CRAFT_COSTS.lantern.length);
+  if (item === "workbench") return techLevel >= 2 && workbenchLevel < CRAFT_COSTS.workbench.length;
+  if (item === "gemCrafter") return workbenchLevel >= 3 && getGemCrafterLevel() < CRAFT_COSTS.gemCrafter.length;
+  if (item === "accessory") {
+    const accessoryLevel = getAccessoryLevel();
+    if (accessoryLevel === 0) return getGemCrafterLevel() >= 1;
+    if (accessoryLevel === 1) return getGemCrafterLevel() >= 2;
+    if (accessoryLevel === 2) return getGemCrafterLevel() >= 2;
+    if (accessoryLevel === 3) return getGemCrafterLevel() >= 3;
+    if (accessoryLevel === 4) return getGemCrafterLevel() >= 3;
+    return false;
+  }
+  if (item === "gemPolisher") return getGemCrafterLevel() >= 3 && getGemPolisherLevel() < CRAFT_COSTS.gemPolisher.length;
+  if (item === "machineWorkbench") return workbenchLevel >= 1 && crafted.machineWorkbench !== true;
+  if (item === "machineMaxUpgrade") return crafted.machineWorkbench === true && getMachineMaxUpgradeLevel() < CRAFT_COSTS.machineMaxUpgrade.length;
+  if (item === "machineRecoveryUpgrade") return crafted.machineWorkbench === true && getMachineMaxUpgradeLevel() >= 1 && getMachineRecoveryUpgradeLevel() < CRAFT_COSTS.machineRecoveryUpgrade.length;
+  if (item === "manualCrafter") return workbenchLevel >= 2 && getManualCrafterLevel() < CRAFT_COSTS.manualCrafter.length;
+  if (item === "restStone") return getGemCrafterLevel() >= 1 && getRestStoneLevel() < CRAFT_COSTS.restStone.length;
+  if (item === "potionWorkbench") return workbenchLevel >= 2 && getPotionWorkbenchLevel() < CRAFT_COSTS.potionWorkbench.length;
+  if (item === "basicSanityPotion") return getPotionWorkbenchLevel() >= 1 && getBasicSanityPotionLevel() < CRAFT_COSTS.basicSanityPotion.length;
+  if (item === "manualExtractor") return workbenchLevel >= 1 && getManualExtractorLevel() < CRAFT_COSTS.manualExtractor.length;
+  if (item === "mysteryDevice") return techLevel >= 5 && getManualExtractorLevel() >= 1 && getMysteryDeviceLevel() < CRAFT_COSTS.mysteryDevice.length;
+  if (item === "lantern") return techLevel >= 3 && lanternLevel < CRAFT_COSTS.lantern.length;
+  if (item === "boots") return techLevel >= 3 && workbenchLevel >= 1;
+  if (item === "marker") return techLevel >= 3 && workbenchLevel >= 1 && crafted.map;
 
-  if (item === "boots") return techLevel >= 3 && crafted.workbench === true;
-  if (item === "marker") return techLevel >= 3 && crafted.workbench === true && crafted.map;
-
-  // 이전 저장 호환용. 신규 테크트리에서는 제작창에 노출하지 않는다.
   if (item === "portableWorkbench") return false;
+  if (item === "machineUpgrade") return false;
   return false;
+}
+
+function getCostForCraftItem(item) {
+  const techLevel = getCraftTechLevel();
+  const torchLevel = getTorchLevel();
+  const lanternLevel = getLanternLevel();
+  const workbenchLevel = getWorkbenchLevel();
+
+  if (item === "craftTech") return CRAFT_COSTS.craftTech[techLevel];
+  if (item === "workbench") return CRAFT_COSTS.workbench[workbenchLevel];
+  if (item === "gemCrafter") return CRAFT_COSTS.gemCrafter[getGemCrafterLevel()];
+  if (item === "accessory") return CRAFT_COSTS.accessory[getAccessoryLevel()];
+  if (item === "gemPolisher") return CRAFT_COSTS.gemPolisher[getGemPolisherLevel()];
+  if (item === "torch") return CRAFT_COSTS.torch[torchLevel];
+  if (item === "torchUse") return CRAFT_COSTS.torchUse;
+  if (item === "lantern") return CRAFT_COSTS.lantern[lanternLevel];
+  if (item === "machineWorkbench") return CRAFT_COSTS.machineWorkbench[0];
+  if (item === "machineMaxUpgrade") return CRAFT_COSTS.machineMaxUpgrade[getMachineMaxUpgradeLevel()];
+  if (item === "machineRecoveryUpgrade") return CRAFT_COSTS.machineRecoveryUpgrade[getMachineRecoveryUpgradeLevel()];
+  if (item === "manualCrafter") return CRAFT_COSTS.manualCrafter[getManualCrafterLevel()];
+  if (item === "restStone") return CRAFT_COSTS.restStone[getRestStoneLevel()];
+  if (item === "potionWorkbench") return CRAFT_COSTS.potionWorkbench[getPotionWorkbenchLevel()];
+  if (item === "basicSanityPotion") return CRAFT_COSTS.basicSanityPotion[getBasicSanityPotionLevel()];
+  if (item === "manualExtractor") return CRAFT_COSTS.manualExtractor[getManualExtractorLevel()];
+  if (item === "mysteryDevice") return CRAFT_COSTS.mysteryDevice[getMysteryDeviceLevel()];
+  if (item === "boots") return getNextUpgradeCost("boots");
+  if (item === "marker") return getNextUpgradeCost("marker");
+  return null;
 }
 
 function canCraft(item) {
   if (!isCraftUnlocked(item)) return false;
 
-  const techLevel = getCraftTechLevel();
-  const torchLevel = getTorchLevel();
-  const lanternLevel = getLanternLevel();
-  const machineLevel = getMachineUpgradeLevel();
-
-  // 제작 기술 Lv1은 기본 방에서 손으로 연구하는 첫 제작이다.
-  if (item === "craftTech") {
-    if (techLevel === 0) return scene === "base" && hasMaterials(CRAFT_COSTS.craftTech[techLevel]);
-    return hasMaterials(CRAFT_COSTS.craftTech[techLevel]);
+  if (item === "craftTech" && getCraftTechLevel() === 0) {
+    return scene === "base" && hasMaterials(getCostForCraftItem(item));
   }
 
-  if (item === "workbench") return scene === "base" && techLevel >= 2 && hasMaterials(CRAFT_COSTS.workbench);
-  if (item === "torch") return techLevel >= 1 && hasMaterials(CRAFT_COSTS.torch[torchLevel]);
-  if (item === "torchUse") return techLevel >= 1 && torchPower < getTorchMax() && hasMaterials(CRAFT_COSTS.torchUse);
-  if (item === "lantern") return techLevel >= 3 && hasMaterials(CRAFT_COSTS.lantern[lanternLevel]);
-  if (item === "machineWorkbench") return canUseMainWorkbench() && hasMaterials(CRAFT_COSTS.machineWorkbench);
-  if (item === "machineUpgrade") return canUseMainWorkbench() && hasMaterials(CRAFT_COSTS.machineUpgrade[machineLevel]);
+  if (item === "workbench" && getWorkbenchLevel() === 0) {
+    return scene === "base" && getCraftTechLevel() >= 2 && hasMaterials(getCostForCraftItem(item));
+  }
 
-  if (item === "boots") return canUseMainWorkbench() && hasMaterials(getNextUpgradeCost("boots"));
-  if (item === "marker") return canUseMainWorkbench() && hasMaterials(getNextUpgradeCost("marker"));
-  return false;
+  if (["workbench", "gemCrafter", "accessory", "gemPolisher", "machineWorkbench", "machineMaxUpgrade", "machineRecoveryUpgrade", "manualCrafter", "restStone", "potionWorkbench", "basicSanityPotion", "manualExtractor", "mysteryDevice", "boots", "marker"].includes(item)) {
+    return canUseMainWorkbench() && hasMaterials(getCostForCraftItem(item));
+  }
+
+  return hasMaterials(getCostForCraftItem(item));
 }
 
 function craft(item) {
-  const techLevel = getCraftTechLevel();
-  const torchLevel = getTorchLevel();
-  const machineLevel = getMachineUpgradeLevel();
-
   if (!isCraftUnlocked(item)) {
     showMessage("아직 테크트리 조건을 만족하지 못했습니다.");
     return;
   }
 
-  if (item === "craftTech" && canCraft("craftTech")) {
-    spendMaterials(CRAFT_COSTS.craftTech[techLevel]);
-    crafted.craftTech = techLevel + 1;
+  if (!canCraft(item)) {
+    showMessage("재료가 부족하거나 현재 제작 단계에서 만들 수 없습니다.");
+    return;
+  }
+
+  const cost = getCostForCraftItem(item);
+  spendMaterials(cost);
+
+  if (item === "craftTech") {
+    crafted.craftTech = getCraftTechLevel() + 1;
     saveProgress();
     showMessage(`제작 기술 Lv ${crafted.craftTech} 연구 완료`);
     return;
   }
 
-  if (item === "workbench" && canCraft("workbench")) {
-    spendMaterials(CRAFT_COSTS.workbench);
+  if (item === "workbench") {
+    crafted.workbenchLevel = getWorkbenchLevel() + 1;
     crafted.workbench = true;
     installBaseWorkbenchIfUnlocked();
     rebuildWorld();
     saveProgress();
-    showMessage("제작대 Lv 1 제작 완료. 기본 위치에 설치되었습니다.");
+    showMessage(`제작대 Lv ${crafted.workbenchLevel} 제작 완료`);
     return;
   }
 
-  if (item === "torch" && canCraft("torch")) {
-    spendMaterials(CRAFT_COSTS.torch[torchLevel]);
-    crafted.torchLevel = torchLevel + 1;
+  if (item === "gemCrafter") {
+    crafted.gemCrafter = getGemCrafterLevel() + 1;
+    saveProgress();
+    showMessage(`수정 세공기 Lv ${crafted.gemCrafter} 제작 완료`);
+    return;
+  }
+
+  if (item === "accessory") {
+    crafted.accessory = getAccessoryLevel() + 1;
+    sanityMax = getSanityMax();
+    sanity = clamp(sanity, 0, sanityMax);
+    saveProgress();
+    showMessage(`장신구 ${crafted.accessory + 1} 제작 완료`);
+    return;
+  }
+
+  if (item === "gemPolisher") {
+    crafted.gemPolisher = getGemPolisherLevel() + 1;
+    sanityMax = getSanityMax();
+    sanity = clamp(sanity, 0, sanityMax);
+    saveProgress();
+    showMessage("수정 연마기 제작 완료");
+    return;
+  }
+
+  if (item === "torch") {
+    crafted.torchLevel = getTorchLevel() + 1;
     torchPower = clamp(torchPower, 0, getTorchMax());
     saveProgress();
-    showMessage("횃불 업그레이드 완료. 횃불 최대치가 늘었습니다.");
+    updateRenderSettings(true);
+    updateHeldTorchVisual();
+    showMessage(`횃불 업그레이드 ${crafted.torchLevel} 완료`);
     return;
   }
 
-  if (item === "torchUse" && canCraft("torchUse")) {
-    spendMaterials(CRAFT_COSTS.torchUse);
+  if (item === "torchUse") {
     const maxTorch = getTorchMax();
     const gain = Math.max(0, maxTorch - torchPower);
     torchPower = maxTorch;
     saveProgress();
+    updateRenderSettings(true);
+    updateHeldTorchVisual();
     showMessage(`횃불을 만들었습니다. 횃불 +${Math.round(gain)}L`);
     return;
   }
 
-  if (item === "lantern" && canCraft("lantern")) {
-    spendMaterials(CRAFT_COSTS.lantern[getLanternLevel()]);
+  if (item === "lantern") {
     crafted.lanternLevel = getLanternLevel() + 1;
     crafted.lantern = true;
     lightPower = clamp(lightPower, 0, getLightMax());
@@ -1626,41 +1965,86 @@ function craft(item) {
     return;
   }
 
-  if (item === "machineWorkbench" && canCraft("machineWorkbench")) {
-    spendMaterials(CRAFT_COSTS.machineWorkbench);
+  if (item === "machineWorkbench") {
     crafted.machineWorkbench = true;
     saveProgress();
     showMessage("기계 제작대 Lv 1 제작 완료");
     return;
   }
 
-  if (item === "machineUpgrade" && canCraft("machineUpgrade")) {
-    spendMaterials(CRAFT_COSTS.machineUpgrade[machineLevel]);
-    crafted.machineUpgrade = machineLevel + 1;
+  if (item === "machineMaxUpgrade") {
+    crafted.machineMaxUpgrade = getMachineMaxUpgradeLevel() + 1;
+    crafted.machineUpgrade = Math.max(Number(crafted.machineUpgrade) || 0, crafted.machineMaxUpgrade);
     saveProgress();
-    const names = ["기계 업그레이드", "기계 업그레이드 I", "기계 업그레이드 II"];
-    showMessage(`${names[machineLevel] || "기계 업그레이드"} 완료`);
+    showMessage(`기계 최대치 업그레이드 ${crafted.machineMaxUpgrade} 완료`);
     return;
   }
 
-  if (item === "boots" && canCraft("boots")) {
-    spendMaterials(getNextUpgradeCost("boots"));
+  if (item === "machineRecoveryUpgrade") {
+    crafted.machineRecoveryUpgrade = getMachineRecoveryUpgradeLevel() + 1;
+    saveProgress();
+    showMessage(`기계 회복 속도 업그레이드 ${crafted.machineRecoveryUpgrade} 완료`);
+    return;
+  }
+
+  if (item === "manualCrafter") {
+    crafted.manualCrafter = getManualCrafterLevel() + 1;
+    saveProgress();
+    showMessage("수동 제작기 Lv 1 제작 완료");
+    return;
+  }
+
+  if (item === "restStone") {
+    crafted.restStone = getRestStoneLevel() + 1;
+    saveProgress();
+    showMessage("안식의 돌 제작 완료");
+    return;
+  }
+
+  if (item === "potionWorkbench") {
+    crafted.potionWorkbench = getPotionWorkbenchLevel() + 1;
+    saveProgress();
+    showMessage("포션 제작기 Lv 1 제작 완료");
+    return;
+  }
+
+  if (item === "basicSanityPotion") {
+    crafted.basicSanityPotion = getBasicSanityPotionLevel() + 1;
+    sanity = clamp(sanity + 15, 0, sanityMax);
+    saveProgress();
+    showMessage("초급 정신력 회복 포션 제작 완료. 정신력 +15");
+    return;
+  }
+
+  if (item === "manualExtractor") {
+    crafted.manualExtractor = getManualExtractorLevel() + 1;
+    saveProgress();
+    showMessage("수동 원석기 Lv 1 제작 완료");
+    return;
+  }
+
+  if (item === "mysteryDevice") {
+    crafted.mysteryDevice = getMysteryDeviceLevel() + 1;
+    saveProgress();
+    showMessage(`미정 장치 Lv ${crafted.mysteryDevice} 제작 완료`);
+    return;
+  }
+
+  if (item === "boots") {
     crafted.boots = getUpgradeLevel("boots") + 1;
     saveProgress();
     showMessage(`러너 부츠 Lv ${crafted.boots} 강화 완료`);
     return;
   }
 
-  if (item === "marker" && canCraft("marker")) {
-    spendMaterials(getNextUpgradeCost("marker"));
+  if (item === "marker") {
     crafted.marker = getUpgradeLevel("marker") + 1;
     saveProgress();
     showMessage(`지도 업그레이드 Lv ${crafted.marker} 완료`);
     return;
   }
-
-  showMessage("재료가 부족하거나 현재 제작 단계에서 만들 수 없습니다.");
 }
+
 
 function movePlayer(nx, ny) {
   if (canOccupyPosition(nx, y)) x = nx;
@@ -1740,7 +2124,7 @@ function updateMovement() {
   }
 
   const runningNow = wantsToRun && sprintActive && !runLockedByStamina && stamina > 0;
-  let speed = runningNow ? CONFIG.runSpeed : CONFIG.walkSpeed;
+  let speed = runningNow ? getRunSpeed() : getWalkSpeed();
 
   speed *= 1 + getUpgradeLevel("boots") * 0.05;
 
@@ -1754,6 +2138,9 @@ function updateMovement() {
 
 function updateSurvivalSystems() {
   if (!gameStarted || gameOver) return;
+
+  sanityMax = getSanityMax();
+  sanity = clamp(sanity, 0, sanityMax);
 
   const inMaze = scene !== "base";
   const lanternLevel = getLanternLevel();
@@ -1787,8 +2174,8 @@ function updateSurvivalSystems() {
     }
   }
 
-  if (inMaze && lightPower <= 0) {
-    sanity = clamp(sanity - CONFIG.sanityDrainAtDark, 0, sanityMax);
+  if (inMaze && lightPower <= 0 && torchPower <= 0) {
+    sanity = clamp(sanity - getSanityDrainPerFrame(), 0, sanityMax);
   } else if (!inMaze) {
     sanity = clamp(sanity + CONFIG.sanityRecoverInBase, 0, sanityMax);
   }
@@ -2113,6 +2500,7 @@ function draw() {
   const h = window.innerHeight;
 
   syncCamera();
+  updateHeldTorchVisual();
   updateRenderSettings();
   renderer.render(scene3d, camera);
 
@@ -2493,7 +2881,7 @@ function getVisibleCraftRows() {
   const techLevel = getCraftTechLevel();
   const torchLevel = getTorchLevel();
   const lanternLevel = getLanternLevel();
-  const machineLevel = getMachineUpgradeLevel();
+  const workbenchLevel = getWorkbenchLevel();
   const bootsLevel = getUpgradeLevel("boots");
   const markerLevel = getUpgradeLevel("marker");
 
@@ -2502,48 +2890,100 @@ function getVisibleCraftRows() {
   }
 
   if (isCraftUnlocked("craftTech")) {
-    const techNames = ["제작 기술 연구", "제작 기술 심화", "제작 기술 확장", "제작 기술 완성"];
-    const notes = ["기본 제작을 익힙니다", "제작대를 만들 수 있습니다", "랜턴과 추가 제작품을 열 수 있습니다", "기계 제작 계열을 열 수 있습니다"];
-    add("craftTech", techNames[techLevel] || "제작 기술", formatCost(CRAFT_COSTS.craftTech[techLevel]), notes[techLevel] || "새 제작품 해금");
+    const techNames = ["제작 기술 Lv 1", "제작 기술 Lv 2", "제작 기술 Lv 3", "제작 기술 Lv 4", "제작 기술 Lv 5"];
+    const notes = ["기초 제작 해금", "제작대와 횃불 계열 해금", "랜턴과 수동 제작 분기 해금", "상위 제작 확장", "후반 장치 계열 해금"];
+    add("craftTech", techNames[techLevel] || "제작 기술", formatCost(getCostForCraftItem("craftTech")), notes[techLevel] || "새 제작품 해금");
   }
 
   if (isCraftUnlocked("torchUse")) {
-    add("torchUse", "횃불 만들기", formatCost(CRAFT_COSTS.torchUse), `횃불 ${Math.round(torchPower)}/${getTorchMax()}L`);
+    add("torchUse", "횃불 만들기", formatCost(getCostForCraftItem("torchUse")), `횃불 ${Math.round(torchPower)}/${getTorchMax()}L`);
   }
 
   if (isCraftUnlocked("torch")) {
-    const names = ["횃불 업그레이드 I", "횃불 업그레이드 II"];
-    add("torch", names[torchLevel] || "횃불 업그레이드", formatCost(CRAFT_COSTS.torch[torchLevel]), "횃불 최대치 증가");
+    const names = ["횃불 업그레이드 I", "횃불 업그레이드 II", "횃불 업그레이드 III"];
+    add("torch", names[torchLevel] || "횃불 업그레이드", formatCost(getCostForCraftItem("torch")), "횃불 최대치 증가");
   }
 
   if (isCraftUnlocked("workbench")) {
-    add("workbench", "제작대", formatCost(CRAFT_COSTS.workbench), "메인공간 기본 위치에 설치");
+    const names = ["제작대 Lv 1", "제작대 Lv 2", "제작대 Lv 3"];
+    add("workbench", names[workbenchLevel] || "제작대", formatCost(getCostForCraftItem("workbench")), workbenchLevel === 0 ? "메인공간 기본 위치에 설치" : "제작 기능 확장");
+  }
+
+  if (isCraftUnlocked("gemCrafter")) {
+    const names = ["수정 세공기 Lv 1", "수정 세공기 Lv 2", "수정 세공기 Lv 3"];
+    add("gemCrafter", names[getGemCrafterLevel()] || "수정 세공기", formatCost(getCostForCraftItem("gemCrafter")), "장신구 계열 해금");
+  }
+
+  if (isCraftUnlocked("restStone")) {
+    add("restStone", "안식의 돌", formatCost(getCostForCraftItem("restStone")), "이동 속도 + / 정신력 감소 -");
+  }
+
+  if (isCraftUnlocked("accessory")) {
+    const names = ["장신구 2", "장신구 3", "장신구 4", "장신구 5", "장신구 6"];
+    const notes = ["정신력 최대치 +10", "정신력 감소 완화", "정신력 최대치 +10", "정신력 감소 완화", "정신력 최대치 +10"];
+    const idx = getAccessoryLevel();
+    add("accessory", names[idx] || "장신구", formatCost(getCostForCraftItem("accessory")), notes[idx] || "장신구 계열 강화");
+  }
+
+  if (isCraftUnlocked("gemPolisher")) {
+    add("gemPolisher", "수정 연마기", formatCost(getCostForCraftItem("gemPolisher")), "장신구 강화 보조 장치");
   }
 
   if (isCraftUnlocked("machineWorkbench")) {
-    add("machineWorkbench", "기계 제작대", formatCost(CRAFT_COSTS.machineWorkbench), "기계 업그레이드 해금");
+    add("machineWorkbench", "기계 제작대 Lv 1", formatCost(getCostForCraftItem("machineWorkbench")), "기계 업그레이드 해금");
   }
 
-  if (isCraftUnlocked("machineUpgrade")) {
-    const names = ["기계 최대치 업그레이드 I", "기계 회복 속도 업그레이드 I", "기계 업그레이드 II"];
-    add("machineUpgrade", names[machineLevel] || "기계 업그레이드", formatCost(CRAFT_COSTS.machineUpgrade[machineLevel]), "기계 제작 기능 향상");
+  if (isCraftUnlocked("machineMaxUpgrade")) {
+    const names = ["기계 최대치 업그레이드 I", "기계 최대치 업그레이드 II", "기계 최대치 업그레이드 III"];
+    add("machineMaxUpgrade", names[getMachineMaxUpgradeLevel()] || "기계 최대치 업그레이드", formatCost(getCostForCraftItem("machineMaxUpgrade")), "기계 저장 한계 증가");
+  }
+
+  if (isCraftUnlocked("machineRecoveryUpgrade")) {
+    const names = ["기계 회복 속도 업그레이드 I", "기계 회복 속도 업그레이드 II"];
+    add("machineRecoveryUpgrade", names[getMachineRecoveryUpgradeLevel()] || "기계 회복 속도 업그레이드", formatCost(getCostForCraftItem("machineRecoveryUpgrade")), "기계 회복 효율 증가");
+  }
+
+  if (isCraftUnlocked("manualCrafter")) {
+    add("manualCrafter", "포션 제작기 Lv 1", formatCost(getCostForCraftItem("manualCrafter")), "상위 포션 계열 제작 해금");
+  }
+
+  if (isCraftUnlocked("restStone")) {
+    add("restStone", "초급 정신력 회복 포션", formatCost(getCostForCraftItem("restStone")), "정신력 회복 계열 제작품");
+  }
+
+  if (isCraftUnlocked("potionWorkbench")) {
+    add("potionWorkbench", "수동 생성기 Lv 1", formatCost(getCostForCraftItem("potionWorkbench")), "상위 생성기 계열 해금");
+  }
+
+  if (isCraftUnlocked("basicSanityPotion")) {
+    add("basicSanityPotion", "초급 정신력 회복 포션", formatCost(getCostForCraftItem("basicSanityPotion")), "제작 즉시 정신력 +15");
+  }
+
+  if (isCraftUnlocked("manualExtractor")) {
+    add("manualExtractor", "수동 원석기 Lv 1", formatCost(getCostForCraftItem("manualExtractor")), "후반 장치 계열 선행 조건");
+  }
+
+  if (isCraftUnlocked("mysteryDevice")) {
+    const names = ["미정 장치 Lv 1", "미정 장치 Lv 2"];
+    add("mysteryDevice", names[getMysteryDeviceLevel()] || "미정 장치", formatCost(getCostForCraftItem("mysteryDevice")), "후반 확장 제작품");
   }
 
   if (isCraftUnlocked("lantern")) {
-    const names = ["랜턴", "랜턴 보강"];
-    add("lantern", names[lanternLevel] || "랜턴", formatCost(CRAFT_COSTS.lantern[lanternLevel]), "석탄으로 빛 유지");
+    const names = ["랜턴 Lv 1", "랜턴 Lv 2"];
+    add("lantern", names[lanternLevel] || "랜턴", formatCost(getCostForCraftItem("lantern")), lanternLevel === 0 ? "불빛 거리 증가" : "불빛 유지 효율 증가");
   }
 
   if (isCraftUnlocked("boots") && bootsLevel < CRAFT_COSTS.boots.length) {
-    add("boots", "다른 아이템", formatCost(getNextUpgradeCost("boots")), "이동 보조 제작품");
+    add("boots", bootsLevel === 0 ? "XX Lv 1" : "XX Lv 2", formatCost(getCostForCraftItem("boots")), bootsLevel === 0 ? "아이템 소모 감소" : "추가 강화" );
   }
 
   if (isCraftUnlocked("marker") && markerLevel < CRAFT_COSTS.marker.length) {
-    add("marker", "지도 보강", formatCost(getNextUpgradeCost("marker")), markerLevel + 1 >= 2 ? "미니맵 활성화" : "내 위치 표시");
+    add("marker", markerLevel === 0 ? "Xx Lv 1" : "Xx Lv 2", formatCost(getCostForCraftItem("marker")), markerLevel === 0 ? "아이템 속도 감소" : "추가 효율" );
   }
 
   return rows;
 }
+
 
 function drawCraftPanel(w, h) {
   const rows = getVisibleCraftRows();
