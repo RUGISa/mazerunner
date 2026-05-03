@@ -71,7 +71,6 @@ const ambientLight = new THREE.AmbientLight(0x373029, 0.55);
 scene3d.add(ambientLight);
 
 let worldRoot = null;
-let heldTorch = null;
 let renderPixelRatio = 1;
 const doorVisuals = new Map();
 const DOOR_OPEN_ANGLE = Math.PI * 0.52;
@@ -114,128 +113,19 @@ const materials = {
   exit: new THREE.MeshStandardMaterial({ color: 0xd76b51, emissive: 0x9c2a18, emissiveIntensity: 1.2, roughness: 0.45, metalness: 0.02, transparent: true, opacity: 0.84 })
 };
 
-heldTorch = createHeldTorchRig();
-camera.add(heldTorch.group);
-camera.add(heldTorch.light);
+const resourceMaterials = {
+  woodBark: new THREE.MeshStandardMaterial({ color: 0x7a4a24, roughness: 0.93, metalness: 0.01 }),
+  woodCore: new THREE.MeshStandardMaterial({ color: 0xc18b52, roughness: 0.88, metalness: 0.01 }),
+  leaf: new THREE.MeshStandardMaterial({ color: 0x557242, roughness: 0.86, metalness: 0.01 }),
+  stoneDark: new THREE.MeshStandardMaterial({ color: 0x62666f, roughness: 1.0, metalness: 0.02 }),
+  stoneLight: new THREE.MeshStandardMaterial({ color: 0x8c919b, roughness: 0.98, metalness: 0.02 }),
+  crystalCore: new THREE.MeshStandardMaterial({ color: 0x9ad8ff, emissive: 0x3f90cf, emissiveIntensity: 1.0, roughness: 0.22, metalness: 0.03, transparent: true, opacity: 0.96 }),
+  crystalShard: new THREE.MeshStandardMaterial({ color: 0xc8eeff, emissive: 0x69b8ff, emissiveIntensity: 1.3, roughness: 0.18, metalness: 0.02, transparent: true, opacity: 0.92 }),
+  coalGlow: new THREE.MeshStandardMaterial({ color: 0x2c231f, emissive: 0xff7b2e, emissiveIntensity: 0.75, roughness: 0.86, metalness: 0.02 })
+};
 
 const keys = {};
 const mouse = { dx: 0, dy: 0 };
-
-function createHeldTorchRig() {
-  const group = new THREE.Group();
-  group.visible = false;
-  group.position.set(0.42, -0.42, -0.7);
-  group.rotation.set(0.16, -0.22, -0.18);
-
-  const shaft = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.024, 0.034, 0.66, 12),
-    materials.wood
-  );
-  shaft.position.set(0, -0.08, 0);
-  group.add(shaft);
-
-  const grip = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.033, 0.033, 0.22, 12),
-    materials.workbench
-  );
-  grip.position.set(0, -0.27, 0);
-  group.add(grip);
-
-  const pommel = new THREE.Mesh(
-    new THREE.SphereGeometry(0.036, 12, 12),
-    materials.doorMetal
-  );
-  pommel.position.set(0, -0.4, 0);
-  group.add(pommel);
-
-  const headRing = new THREE.Mesh(
-    new THREE.TorusGeometry(0.054, 0.007, 8, 20),
-    materials.doorMetal
-  );
-  headRing.position.set(0, 0.21, 0);
-  headRing.rotation.x = Math.PI / 2;
-  group.add(headRing);
-
-  for (let i = 0; i < 4; i++) {
-    const bar = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.007, 0.007, 0.18, 8),
-      materials.doorMetal
-    );
-    const angle = (Math.PI * 2 * i) / 4;
-    bar.position.set(Math.cos(angle) * 0.045, 0.29, Math.sin(angle) * 0.045);
-    group.add(bar);
-  }
-
-  const capRing = headRing.clone();
-  capRing.position.y = 0.38;
-  group.add(capRing);
-
-  const emberMaterial = new THREE.MeshStandardMaterial({
-    color: 0xffcc7a,
-    emissive: 0xff8a1f,
-    emissiveIntensity: 2.3,
-    roughness: 0.15,
-    metalness: 0.0,
-    transparent: true,
-    opacity: 0.95
-  });
-
-  const coalBed = new THREE.Mesh(new THREE.SphereGeometry(0.05, 12, 12), emberMaterial);
-  coalBed.position.set(0, 0.28, 0);
-  coalBed.scale.set(1.0, 0.75, 1.0);
-  group.add(coalBed);
-
-  const sparks = [];
-  for (let i = 0; i < 6; i++) {
-    const sparkMat = emberMaterial.clone();
-    sparkMat.opacity = 0.8;
-    const spark = new THREE.Mesh(new THREE.SphereGeometry(0.009 + (i % 3) * 0.002, 8, 8), sparkMat);
-    spark.position.set(0, 0.35 + i * 0.015, 0);
-    group.add(spark);
-    sparks.push(spark);
-  }
-
-  const glow = new THREE.PointLight(0xffa13a, 0.0, 8.0, 1.9);
-  glow.position.set(0.01, 0.31, 0.0);
-  glow.visible = false;
-
-  return { group, coalBed, sparks, light: glow };
-}
-
-function updateHeldTorchVisual() {
-  if (!heldTorch) return;
-
-  const active = gameStarted && torchPower > 0;
-  heldTorch.group.visible = active;
-  heldTorch.light.visible = active;
-  if (!active) return;
-
-  const t = performance.now() * 0.001;
-  const torchRatio = clamp(torchPower / Math.max(1, getTorchMax()), 0, 1);
-  const sway = Math.sin(t * 1.8) * 0.003;
-  const pulse = 0.96 + Math.sin(t * 8.5) * 0.025;
-
-  heldTorch.group.position.set(0.42 + sway, -0.42 + Math.cos(t * 2.1) * 0.0025, -0.7);
-  heldTorch.group.rotation.set(0.15 + Math.sin(t * 1.7) * 0.008, -0.22, -0.18 + sway * 2.2);
-
-  heldTorch.coalBed.scale.set(1.0 + Math.sin(t * 7.0) * 0.02, 0.74 + pulse * 0.03, 1.0 + Math.cos(t * 6.0) * 0.02);
-
-  if (Array.isArray(heldTorch.sparks)) {
-    heldTorch.sparks.forEach((spark, index) => {
-      const phase = t * (1.8 + index * 0.22) + index * 0.9;
-      const loop = (phase % 1.0);
-      spark.position.x = Math.sin(phase * 3.1) * (0.008 + index * 0.0015);
-      spark.position.y = 0.34 + loop * (0.18 + index * 0.01);
-      spark.position.z = Math.cos(phase * 2.7) * (0.01 + index * 0.0012);
-      const scale = 0.6 + (1.0 - loop) * 0.9;
-      spark.scale.setScalar(scale);
-      spark.material.opacity = 0.85 * (1.0 - loop);
-    });
-  }
-
-  heldTorch.light.intensity = 0.85 + torchRatio * 0.95 + Math.sin(t * 10.0) * 0.04;
-  heldTorch.light.distance = 7.0 + torchRatio * 2.0;
-}
 
 const DEFAULT_CONTROLS = {
   forward: "KeyW",
@@ -288,21 +178,6 @@ const CRAFT_COSTS = {
     { wood: 3, stone: 2, coal: 1 },
     { wood: 4, stone: 3, coal: 2 },
     { wood: 5, stone: 4, crystal: 2, coal: 3 }
-  ],
-  gemCrafter: [
-    { stone: 3, crystal: 2, coal: 1 },
-    { stone: 4, crystal: 3, coal: 2 },
-    { stone: 5, crystal: 4, coal: 3 }
-  ],
-  accessory: [
-    { crystal: 2, coal: 1 },
-    { crystal: 2, stone: 2, coal: 1 },
-    { crystal: 3, stone: 2, coal: 2 },
-    { crystal: 3, stone: 3, coal: 2 },
-    { crystal: 4, stone: 3, coal: 3 }
-  ],
-  gemPolisher: [
-    { stone: 4, crystal: 3, coal: 2 }
   ],
   manualCrafter: [
     { wood: 3, stone: 3, crystal: 1 }
@@ -380,7 +255,7 @@ const CONFIG = {
   mazeCells: 68,
   resourceDensity: 0.055,
   interactDistance: 1.25,
-  playerRadius: 0.30,
+  playerRadius: 0.24,
   baseLightRecover: 0.18,
   // 초당 기준 수치를 60프레임 기준으로 나눠 사용한다.
   // 빛 감소: 기본 10L/s, 업그레이드 I 8L/s, 업그레이드 II 5L/s.
@@ -440,6 +315,7 @@ let lanternFuelTimer = 0;
 let gameOver = false;
 let debugInfiniteLantern = false;
 let gathering = null;
+let testApplyInProgress = false;
 
 let inventory = {
   wood: 0,
@@ -460,9 +336,6 @@ let crafted = {
   marker: 0,
   workbench: false,
   workbenchLevel: 0,
-  gemCrafter: 0,
-  accessory: 0,
-  gemPolisher: 0,
   portableWorkbench: 0,
   craftTech: 0,
   torchLevel: 0,
@@ -763,7 +636,7 @@ function loadProgress() {
     collectedResources = {};
     exploredTiles = {};
     doorStates = {};
-    crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, workbenchLevel: 0, gemCrafter: 0, accessory: 0, gemPolisher: 0, portableWorkbench: 0, craftTech: 0, torchLevel: 0, machineWorkbench: false, machineUpgrade: 0, machineMaxUpgrade: 0, machineRecoveryUpgrade: 0, manualCrafter: 0, restStone: 0, potionWorkbench: 0, basicSanityPotion: 0, manualExtractor: 0, mysteryDevice: 0 };
+    crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, workbenchLevel: 0, portableWorkbench: 0, craftTech: 0, torchLevel: 0, machineWorkbench: false, machineUpgrade: 0, machineMaxUpgrade: 0, machineRecoveryUpgrade: 0, manualCrafter: 0, restStone: 0, potionWorkbench: 0, basicSanityPotion: 0, manualExtractor: 0, mysteryDevice: 0 };
   }
 }
 
@@ -867,7 +740,7 @@ function resetGameProgress() {
   collectedResources = {};
   exploredTiles = {};
   doorStates = {};
-  crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, workbenchLevel: 0, gemCrafter: 0, accessory: 0, gemPolisher: 0, portableWorkbench: 0, craftTech: 0, torchLevel: 0, machineWorkbench: false, machineUpgrade: 0, machineMaxUpgrade: 0, machineRecoveryUpgrade: 0, manualCrafter: 0, restStone: 0, potionWorkbench: 0, basicSanityPotion: 0, manualExtractor: 0, mysteryDevice: 0 };
+  crafted = { boots: 0, lantern: false, lanternLevel: 0, map: true, marker: 0, workbench: false, workbenchLevel: 0, portableWorkbench: 0, craftTech: 0, torchLevel: 0, machineWorkbench: false, machineUpgrade: 0, machineMaxUpgrade: 0, machineRecoveryUpgrade: 0, manualCrafter: 0, restStone: 0, potionWorkbench: 0, basicSanityPotion: 0, manualExtractor: 0, mysteryDevice: 0 };
 
   generateMaze();
   saveProgress();
@@ -913,29 +786,59 @@ function readTestNumber(input, min, max) {
   return Math.round(clamp(Number(input.value) || 0, min, max));
 }
 
-function applyTestValues() {
+function applyTestValues(showToast = true) {
   inventory.wood = readTestNumber(testWood, 0, 999);
   inventory.stone = readTestNumber(testStone, 0, 999);
   inventory.crystal = readTestNumber(testCrystal, 0, 999);
   inventory.coal = testCoal ? readTestNumber(testCoal, 0, 999) : (inventory.coal || 0);
-  stamina = readTestNumber(testStamina, 0, staminaMax);
-  sanity = testSanity ? readTestNumber(testSanity, 0, sanityMax) : sanity;
-  lightPower = testLight ? readTestNumber(testLight, 0, getLightMax()) : lightPower;
+
   crafted.boots = readTestNumber(testBoots, 0, CRAFT_COSTS.boots.length);
   crafted.marker = readTestNumber(testMarker, 0, CRAFT_COSTS.marker.length);
   crafted.workbench = testWorkbench ? testWorkbench.checked : crafted.workbench;
+  crafted.workbenchLevel = crafted.workbench ? Math.max(1, Number(crafted.workbenchLevel) || 1) : 0;
   crafted.lanternLevel = testLantern ? readTestNumber(testLantern, 0, CRAFT_COSTS.lantern.length) : crafted.lanternLevel;
   crafted.lantern = crafted.lanternLevel > 0;
   crafted.craftTech = testPortableWorkbench ? readTestNumber(testPortableWorkbench, 0, CRAFT_COSTS.craftTech.length) : crafted.craftTech;
   debugInfiniteLantern = testInfiniteLantern ? testInfiniteLantern.checked : debugInfiniteLantern;
   crafted.map = true;
 
+  normalizeCraftedProgress();
+
+  staminaMax = getStaminaMax();
+  lightMax = getLightMax();
+
+  stamina = readTestNumber(testStamina, 0, staminaMax);
+  sanity = testSanity ? readTestNumber(testSanity, 0, sanityMax) : sanity;
+  lightPower = testLight ? readTestNumber(testLight, 0, getLightMax()) : lightPower;
+  torchPower = clamp(torchPower, 0, getTorchMax());
+
   installBaseWorkbenchIfUnlocked();
   rebuildWorld();
   saveProgress();
   syncTestPanel();
   updateRenderSettings(true);
-  showMessage("테스트 값 적용");
+  if (showToast) showMessage("테스트 값 적용");
+}
+
+function queueTestApply(message) {
+  if (testApplyInProgress) return;
+  testApplyInProgress = true;
+  applyTestBtn.disabled = true;
+  fillTestBtn.disabled = true;
+
+  requestAnimationFrame(() => {
+    try {
+      applyTestValues(false);
+      if (message) showMessage(message);
+    } catch (error) {
+      console.error(error);
+      showMessage("테스트 값 적용 중 오류가 발생했습니다.");
+    } finally {
+      testApplyInProgress = false;
+      applyTestBtn.disabled = false;
+      fillTestBtn.disabled = false;
+    }
+  });
 }
 
 function createRng(seed) {
@@ -1054,15 +957,8 @@ function wouldDoorBlockPlayer(tx, ty) {
   return circleOverlapsTile(x, y, tx, ty, CONFIG.playerRadius + 0.06);
 }
 
-function getTorchRatio() {
-  const maxTorch = Math.max(1, getTorchMax());
-  return clamp(torchPower / maxTorch, 0, 1);
-}
-
 function getLightRatio() {
-  const lightRatio = clamp(lightPower / getLightMax(), 0, 1);
-  const torchRatio = getTorchRatio();
-  return clamp(Math.max(lightRatio, torchRatio), 0, 1);
+  return clamp(lightPower / getLightMax(), 0, 1);
 }
 
 function getPortableWorkbenchLevel() {
@@ -1719,46 +1615,6 @@ function getWorkbenchLevel() {
   return clamp(Number(crafted.workbenchLevel) || (crafted.workbench === true ? 1 : 0), 0, CRAFT_COSTS.workbench.length);
 }
 
-function getGemCrafterLevel() {
-  return clamp(Number(crafted.gemCrafter) || 0, 0, CRAFT_COSTS.gemCrafter.length);
-}
-
-function getAccessoryLevel() {
-  return clamp(Number(crafted.accessory) || 0, 0, CRAFT_COSTS.accessory.length);
-}
-
-function getGemPolisherLevel() {
-  return clamp(Number(crafted.gemPolisher) || 0, 0, CRAFT_COSTS.gemPolisher.length);
-}
-
-function getSanityMax() {
-  let bonus = 0;
-  const accessoryLevel = getAccessoryLevel();
-  if (accessoryLevel >= 1) bonus += 10;
-  if (accessoryLevel >= 3) bonus += 10;
-  if (accessoryLevel >= 5) bonus += 10;
-  if (getGemPolisherLevel() >= 1) bonus += 10;
-  return 100 + bonus;
-}
-
-function getSanityDrainPerFrame() {
-  let drain = CONFIG.sanityDrainAtDark;
-  if (getRestStoneLevel() >= 1) drain *= 0.85;
-  const accessoryLevel = getAccessoryLevel();
-  if (accessoryLevel >= 2) drain *= 0.92;
-  if (accessoryLevel >= 4) drain *= 0.92;
-  if (getGemPolisherLevel() >= 1) drain *= 0.9;
-  return drain;
-}
-
-function getWalkSpeed() {
-  return CONFIG.walkSpeed * (getRestStoneLevel() >= 1 ? 1.08 : 1);
-}
-
-function getRunSpeed() {
-  return CONFIG.runSpeed * (getRestStoneLevel() >= 1 ? 1.06 : 1);
-}
-
 function getMachineMaxUpgradeLevel() {
   return clamp(Number(crafted.machineMaxUpgrade) || 0, 0, CRAFT_COSTS.machineMaxUpgrade.length);
 }
@@ -1802,23 +1658,12 @@ function isCraftUnlocked(item) {
   if (item === "torch") return techLevel >= 1 && torchLevel < CRAFT_COSTS.torch.length;
 
   if (item === "workbench") return techLevel >= 2 && workbenchLevel < CRAFT_COSTS.workbench.length;
-  if (item === "gemCrafter") return workbenchLevel >= 3 && getGemCrafterLevel() < CRAFT_COSTS.gemCrafter.length;
-  if (item === "accessory") {
-    const accessoryLevel = getAccessoryLevel();
-    if (accessoryLevel === 0) return getGemCrafterLevel() >= 1;
-    if (accessoryLevel === 1) return getGemCrafterLevel() >= 2;
-    if (accessoryLevel === 2) return getGemCrafterLevel() >= 2;
-    if (accessoryLevel === 3) return getGemCrafterLevel() >= 3;
-    if (accessoryLevel === 4) return getGemCrafterLevel() >= 3;
-    return false;
-  }
-  if (item === "gemPolisher") return getGemCrafterLevel() >= 3 && getGemPolisherLevel() < CRAFT_COSTS.gemPolisher.length;
   if (item === "machineWorkbench") return workbenchLevel >= 1 && crafted.machineWorkbench !== true;
   if (item === "machineMaxUpgrade") return crafted.machineWorkbench === true && getMachineMaxUpgradeLevel() < CRAFT_COSTS.machineMaxUpgrade.length;
   if (item === "machineRecoveryUpgrade") return crafted.machineWorkbench === true && getMachineMaxUpgradeLevel() >= 1 && getMachineRecoveryUpgradeLevel() < CRAFT_COSTS.machineRecoveryUpgrade.length;
-  if (item === "manualCrafter") return workbenchLevel >= 2 && getManualCrafterLevel() < CRAFT_COSTS.manualCrafter.length;
-  if (item === "restStone") return getGemCrafterLevel() >= 1 && getRestStoneLevel() < CRAFT_COSTS.restStone.length;
-  if (item === "potionWorkbench") return workbenchLevel >= 2 && getPotionWorkbenchLevel() < CRAFT_COSTS.potionWorkbench.length;
+  if (item === "manualCrafter") return workbenchLevel >= 3 && getManualCrafterLevel() < CRAFT_COSTS.manualCrafter.length;
+  if (item === "restStone") return getManualCrafterLevel() >= 1 && getRestStoneLevel() < CRAFT_COSTS.restStone.length;
+  if (item === "potionWorkbench") return workbenchLevel >= 3 && getPotionWorkbenchLevel() < CRAFT_COSTS.potionWorkbench.length;
   if (item === "basicSanityPotion") return getPotionWorkbenchLevel() >= 1 && getBasicSanityPotionLevel() < CRAFT_COSTS.basicSanityPotion.length;
   if (item === "manualExtractor") return workbenchLevel >= 1 && getManualExtractorLevel() < CRAFT_COSTS.manualExtractor.length;
   if (item === "mysteryDevice") return techLevel >= 5 && getManualExtractorLevel() >= 1 && getMysteryDeviceLevel() < CRAFT_COSTS.mysteryDevice.length;
@@ -1839,9 +1684,6 @@ function getCostForCraftItem(item) {
 
   if (item === "craftTech") return CRAFT_COSTS.craftTech[techLevel];
   if (item === "workbench") return CRAFT_COSTS.workbench[workbenchLevel];
-  if (item === "gemCrafter") return CRAFT_COSTS.gemCrafter[getGemCrafterLevel()];
-  if (item === "accessory") return CRAFT_COSTS.accessory[getAccessoryLevel()];
-  if (item === "gemPolisher") return CRAFT_COSTS.gemPolisher[getGemPolisherLevel()];
   if (item === "torch") return CRAFT_COSTS.torch[torchLevel];
   if (item === "torchUse") return CRAFT_COSTS.torchUse;
   if (item === "lantern") return CRAFT_COSTS.lantern[lanternLevel];
@@ -1870,7 +1712,7 @@ function canCraft(item) {
     return scene === "base" && getCraftTechLevel() >= 2 && hasMaterials(getCostForCraftItem(item));
   }
 
-  if (["workbench", "gemCrafter", "accessory", "gemPolisher", "machineWorkbench", "machineMaxUpgrade", "machineRecoveryUpgrade", "manualCrafter", "restStone", "potionWorkbench", "basicSanityPotion", "manualExtractor", "mysteryDevice", "boots", "marker"].includes(item)) {
+  if (["workbench", "machineWorkbench", "machineMaxUpgrade", "machineRecoveryUpgrade", "manualCrafter", "restStone", "potionWorkbench", "basicSanityPotion", "manualExtractor", "mysteryDevice", "boots", "marker"].includes(item)) {
     return canUseMainWorkbench() && hasMaterials(getCostForCraftItem(item));
   }
 
@@ -1908,37 +1750,10 @@ function craft(item) {
     return;
   }
 
-  if (item === "gemCrafter") {
-    crafted.gemCrafter = getGemCrafterLevel() + 1;
-    saveProgress();
-    showMessage(`수정 세공기 Lv ${crafted.gemCrafter} 제작 완료`);
-    return;
-  }
-
-  if (item === "accessory") {
-    crafted.accessory = getAccessoryLevel() + 1;
-    sanityMax = getSanityMax();
-    sanity = clamp(sanity, 0, sanityMax);
-    saveProgress();
-    showMessage(`장신구 ${crafted.accessory + 1} 제작 완료`);
-    return;
-  }
-
-  if (item === "gemPolisher") {
-    crafted.gemPolisher = getGemPolisherLevel() + 1;
-    sanityMax = getSanityMax();
-    sanity = clamp(sanity, 0, sanityMax);
-    saveProgress();
-    showMessage("수정 연마기 제작 완료");
-    return;
-  }
-
   if (item === "torch") {
     crafted.torchLevel = getTorchLevel() + 1;
     torchPower = clamp(torchPower, 0, getTorchMax());
     saveProgress();
-    updateRenderSettings(true);
-    updateHeldTorchVisual();
     showMessage(`횃불 업그레이드 ${crafted.torchLevel} 완료`);
     return;
   }
@@ -1948,8 +1763,6 @@ function craft(item) {
     const gain = Math.max(0, maxTorch - torchPower);
     torchPower = maxTorch;
     saveProgress();
-    updateRenderSettings(true);
-    updateHeldTorchVisual();
     showMessage(`횃불을 만들었습니다. 횃불 +${Math.round(gain)}L`);
     return;
   }
@@ -2124,7 +1937,7 @@ function updateMovement() {
   }
 
   const runningNow = wantsToRun && sprintActive && !runLockedByStamina && stamina > 0;
-  let speed = runningNow ? getRunSpeed() : getWalkSpeed();
+  let speed = runningNow ? CONFIG.runSpeed : CONFIG.walkSpeed;
 
   speed *= 1 + getUpgradeLevel("boots") * 0.05;
 
@@ -2138,9 +1951,6 @@ function updateMovement() {
 
 function updateSurvivalSystems() {
   if (!gameStarted || gameOver) return;
-
-  sanityMax = getSanityMax();
-  sanity = clamp(sanity, 0, sanityMax);
 
   const inMaze = scene !== "base";
   const lanternLevel = getLanternLevel();
@@ -2174,8 +1984,8 @@ function updateSurvivalSystems() {
     }
   }
 
-  if (inMaze && lightPower <= 0 && torchPower <= 0) {
-    sanity = clamp(sanity - getSanityDrainPerFrame(), 0, sanityMax);
+  if (inMaze && lightPower <= 0) {
+    sanity = clamp(sanity - CONFIG.sanityDrainAtDark, 0, sanityMax);
   } else if (!inMaze) {
     sanity = clamp(sanity + CONFIG.sanityRecoverInBase, 0, sanityMax);
   }
@@ -2355,13 +2165,13 @@ function addDetailedDoors(tiles) {
     group.position.set(tile.x + 0.5, 0, tile.y + 0.5);
     group.rotation.y = getDoorRotationY(tile.x, tile.y);
 
-    addDoorBox(group, 0.14, 2.18, 0.24, materials.doorFrame, -0.54, 1.09, 0);
-    addDoorBox(group, 0.14, 2.18, 0.24, materials.doorFrame, 0.54, 1.09, 0);
-    addDoorBox(group, 1.20, 0.16, 0.24, materials.doorFrame, 0, 2.21, 0);
-    addDoorBox(group, 1.08, 0.08, 0.24, materials.doorFrame, 0, 0.04, 0);
+    addDoorBox(group, 0.13, 2.18, 0.24, materials.doorFrame, -0.515, 1.09, 0);
+    addDoorBox(group, 0.13, 2.18, 0.24, materials.doorFrame, 0.515, 1.09, 0);
+    addDoorBox(group, 1.13, 0.16, 0.24, materials.doorFrame, 0, 2.21, 0);
+    addDoorBox(group, 1.02, 0.08, 0.24, materials.doorFrame, 0, 0.04, 0);
 
     const panel = new THREE.Group();
-    panel.position.set(-0.42, 0, 0);
+    panel.position.set(-0.39, 0, 0);
     panel.rotation.y = targetRotation;
     group.add(panel);
 
@@ -2372,18 +2182,188 @@ function addDetailedDoors(tiles) {
       targetRotation
     });
 
-    const panelX = (localX) => localX + 0.42;
-    addDoorBox(panel, 0.84, 1.92, 0.16, materials.door, panelX(0), 0.96, 0);
+    const panelX = (localX) => localX + 0.39;
+    addDoorBox(panel, 0.78, 1.92, 0.14, materials.door, panelX(0), 0.96, 0);
 
     for (const zSide of [-0.101, 0.101]) {
-      addDoorBox(panel, 0.78, 0.07, 0.028, materials.doorMetal, panelX(0), 0.66, zSide);
-      addDoorBox(panel, 0.78, 0.07, 0.028, materials.doorMetal, panelX(0), 1.21, zSide);
-      addDoorBox(panel, 0.78, 0.07, 0.028, materials.doorMetal, panelX(0), 1.76, zSide);
+      addDoorBox(panel, 0.70, 0.07, 0.028, materials.doorMetal, panelX(0), 0.66, zSide);
+      addDoorBox(panel, 0.70, 0.07, 0.028, materials.doorMetal, panelX(0), 1.21, zSide);
+      addDoorBox(panel, 0.70, 0.07, 0.028, materials.doorMetal, panelX(0), 1.76, zSide);
       addDoorBox(panel, 0.022, 1.72, 0.026, materials.doorFrame, panelX(-0.20), 1.03, zSide);
       addDoorBox(panel, 0.022, 1.72, 0.026, materials.doorFrame, panelX(0.20), 1.03, zSide);
       addDoorHandle(panel, panelX(0.29), 1.04, zSide * 1.28);
     }
 
+    worldRoot.add(group);
+  }
+}
+
+function tileNoise(tx, ty, seed = 0) {
+  const n = Math.sin((tx + 1) * 127.1 + (ty + 1) * 311.7 + seed * 74.7) * 43758.5453123;
+  return n - Math.floor(n);
+}
+
+function createWoodPileModel() {
+  const group = new THREE.Group();
+
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.34, 0.12, 12), resourceMaterials.woodCore);
+  base.position.set(0, 0.06, 0);
+  base.scale.set(1.2, 1, 1.08);
+  group.add(base);
+
+  const logs = [
+    [-0.11, 0.16, -0.12, 0.84, 0.12],
+    [0.14, 0.19, 0.08, 0.76, -0.08],
+    [0.02, 0.28, -0.02, 0.64, 0.18],
+    [-0.15, 0.27, 0.16, 0.58, -0.12]
+  ];
+
+  logs.forEach((entry, idx) => {
+    const [px, py, pz, len, rotX] = entry;
+    const radius = 0.09 - idx * 0.006;
+    const log = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.92, radius, len, 12), resourceMaterials.woodBark);
+    log.rotation.z = Math.PI / 2;
+    log.rotation.x = rotX;
+    log.position.set(px, py, pz);
+    group.add(log);
+
+    const endGeo = new THREE.CylinderGeometry(radius * 0.95, radius * 0.95, 0.03, 12);
+    const endA = new THREE.Mesh(endGeo, resourceMaterials.woodCore);
+    endA.rotation.z = Math.PI / 2;
+    endA.position.set(px - len / 2, py, pz);
+    group.add(endA);
+    const endB = endA.clone();
+    endB.position.x = px + len / 2;
+    group.add(endB);
+  });
+
+  const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.46, 8), resourceMaterials.woodBark);
+  branch.position.set(0.18, 0.38, 0.07);
+  branch.rotation.z = -0.82;
+  branch.rotation.x = 0.22;
+  group.add(branch);
+
+  const leaf1 = new THREE.Mesh(new THREE.IcosahedronGeometry(0.08, 0), resourceMaterials.leaf);
+  leaf1.position.set(0.27, 0.5, 0.12);
+  leaf1.scale.set(1.0, 0.62, 0.86);
+  group.add(leaf1);
+
+  const leaf2 = leaf1.clone();
+  leaf2.position.set(0.22, 0.46, -0.02);
+  leaf2.scale.set(0.72, 0.52, 0.6);
+  group.add(leaf2);
+
+  return group;
+}
+
+function createStoneClusterModel() {
+  const group = new THREE.Group();
+
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.4, 0.08, 10), resourceMaterials.stoneDark);
+  base.position.set(0, 0.04, 0);
+  base.scale.set(1.12, 1, 1.0);
+  group.add(base);
+
+  const rocks = [
+    [-0.18, 0.16, -0.06, 0.18, resourceMaterials.stoneDark],
+    [0.15, 0.15, 0.12, 0.16, resourceMaterials.stoneLight],
+    [0.06, 0.23, -0.14, 0.15, resourceMaterials.stoneDark],
+    [-0.02, 0.27, 0.04, 0.22, resourceMaterials.stoneLight],
+    [0.2, 0.24, -0.02, 0.11, resourceMaterials.stoneDark]
+  ];
+
+  rocks.forEach((entry, idx) => {
+    const [px, py, pz, s, mat] = entry;
+    const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), mat);
+    rock.position.set(px, py, pz);
+    rock.rotation.set(idx * 0.35, idx * 0.55, idx * 0.18);
+    group.add(rock);
+  });
+
+  return group;
+}
+
+function createCrystalClusterModel() {
+  const group = new THREE.Group();
+
+  const base = new THREE.Mesh(new THREE.DodecahedronGeometry(0.25, 0), resourceMaterials.stoneDark);
+  base.position.set(0, 0.14, 0);
+  base.scale.set(1.25, 0.72, 1.06);
+  group.add(base);
+
+  const shardData = [
+    [0, 0.58, 0, 0.36, resourceMaterials.crystalCore, 1.7],
+    [-0.16, 0.42, 0.08, 0.22, resourceMaterials.crystalShard, 1.24],
+    [0.17, 0.39, -0.1, 0.21, resourceMaterials.crystalShard, 1.18],
+    [0.06, 0.35, 0.18, 0.17, resourceMaterials.crystalShard, 1.02],
+    [-0.08, 0.31, -0.17, 0.16, resourceMaterials.crystalShard, 0.92]
+  ];
+
+  shardData.forEach((entry, idx) => {
+    const [px, py, pz, s, mat, sy] = entry;
+    const shard = new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), mat);
+    shard.position.set(px, py, pz);
+    shard.rotation.set(0.15 * idx, 0.35 * idx, 0.08 * idx);
+    shard.scale.set(0.44, sy, 0.44);
+    group.add(shard);
+  });
+
+  const glowOrb = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 10), resourceMaterials.crystalShard);
+  glowOrb.position.set(0.02, 0.72, 0.04);
+  group.add(glowOrb);
+
+  return group;
+}
+
+function createCoalPileModel() {
+  const group = new THREE.Group();
+
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.39, 0.07, 10), materials.coal);
+  base.position.set(0, 0.035, 0);
+  group.add(base);
+
+  const pieces = [
+    [-0.14, 0.12, -0.07, 0.16],
+    [0.13, 0.13, 0.09, 0.15],
+    [0.06, 0.18, -0.13, 0.14],
+    [-0.02, 0.22, 0.03, 0.19],
+    [0.19, 0.21, -0.01, 0.11]
+  ];
+
+  pieces.forEach((entry, idx) => {
+    const [px, py, pz, s] = entry;
+    const mat = idx === 3 ? resourceMaterials.coalGlow : materials.coal;
+    const lump = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), mat);
+    lump.position.set(px, py, pz);
+    lump.rotation.set(idx * 0.32, idx * 0.54, idx * 0.21);
+    group.add(lump);
+  });
+
+  for (let i = 0; i < 5; i++) {
+    const ember = new THREE.Mesh(new THREE.SphereGeometry(0.017 + i * 0.003, 8, 8), resourceMaterials.coalGlow);
+    ember.position.set(-0.08 + i * 0.05, 0.24 + (i % 2) * 0.03, 0.04 - i * 0.02);
+    group.add(ember);
+  }
+
+  return group;
+}
+
+function addResourceModels(tiles, type) {
+  if (!tiles.length) return;
+
+  for (const tile of tiles) {
+    let group;
+    if (type === "wood") group = createWoodPileModel();
+    else if (type === "stone") group = createStoneClusterModel();
+    else if (type === "crystal") group = createCrystalClusterModel();
+    else if (type === "coal") group = createCoalPileModel();
+    else continue;
+
+    const n = tileNoise(tile.x, tile.y, 1);
+    group.position.set(tile.x + 0.5, 0.01, tile.y + 0.5);
+    group.rotation.y = n * Math.PI * 2;
+    const scale = 0.95 + tileNoise(tile.x, tile.y, 2) * 0.22;
+    group.scale.setScalar(scale);
     worldRoot.add(group);
   }
 }
@@ -2450,14 +2430,14 @@ function rebuildWorld() {
     }
   }
 
-  addInstancedTiles(tiles.wall, new THREE.BoxGeometry(1, WALL_HEIGHT, 1), materials.wall, WALL_HEIGHT / 2);
-  addInstancedTiles(tiles.wall, new THREE.BoxGeometry(1.018, 0.11, 1.018), materials.wallTrim, 0.055);
-  addInstancedTiles(tiles.wall, new THREE.BoxGeometry(1.02, 0.08, 1.02), materials.wallTrim, WALL_HEIGHT - 0.04);
+  addInstancedTiles(tiles.wall, new THREE.BoxGeometry(1.02, WALL_HEIGHT, 1.02), materials.wall, WALL_HEIGHT / 2);
+  addInstancedTiles(tiles.wall, new THREE.BoxGeometry(1.04, 0.11, 1.04), materials.wallTrim, 0.055);
+  addInstancedTiles(tiles.wall, new THREE.BoxGeometry(1.04, 0.08, 1.04), materials.wallTrim, WALL_HEIGHT - 0.04);
   addDetailedDoors(tiles.door);
-  addInstancedTiles(tiles.wood, new THREE.CylinderGeometry(0.18, 0.23, 0.9, 9), materials.wood, 0.45);
-  addInstancedTiles(tiles.stone, new THREE.DodecahedronGeometry(0.34, 0), materials.stone, 0.34);
-  addInstancedTiles(tiles.crystal, new THREE.OctahedronGeometry(0.42, 0), materials.crystal, 0.55);
-  addInstancedTiles(tiles.coal, new THREE.DodecahedronGeometry(0.30, 0), materials.coal, 0.30);
+  addResourceModels(tiles.wood, "wood");
+  addResourceModels(tiles.stone, "stone");
+  addResourceModels(tiles.crystal, "crystal");
+  addResourceModels(tiles.coal, "coal");
   addInstancedTiles(tiles.workbench, new THREE.BoxGeometry(0.86, 0.52, 0.62), materials.workbench, 0.26);
   addInstancedTiles(tiles.storage, new THREE.BoxGeometry(0.78, 0.78, 0.78), materials.storage, 0.39);
   addInstancedTiles(tiles.exit, new THREE.BoxGeometry(0.7, 1.55, 0.08), materials.exit, 0.78);
@@ -2500,7 +2480,6 @@ function draw() {
   const h = window.innerHeight;
 
   syncCamera();
-  updateHeldTorchVisual();
   updateRenderSettings();
   renderer.render(scene3d, camera);
 
@@ -2511,6 +2490,7 @@ function draw() {
   if (!gameStarted) return;
 
   drawHUD(w, h);
+  drawGatheringOverlay(w, h);
   if (getUpgradeLevel("marker") >= 2 && !mapOpen) drawMiniMap(w, h);
 
   if (mapOpen) drawFullMap(w, h);
@@ -2567,6 +2547,43 @@ function drawPanel(x0, y0, w0, h0, r, fill, stroke) {
   }
 }
 
+function drawOrnatePanel(x0, y0, w0, h0, accent = "rgba(183,146,83,0.36)") {
+  ctx.save();
+  const bg = ctx.createLinearGradient(x0, y0, x0, y0 + h0);
+  bg.addColorStop(0, "rgba(14,11,8,0.90)");
+  bg.addColorStop(0.52, "rgba(9,8,7,0.86)");
+  bg.addColorStop(1, "rgba(4,4,4,0.86)");
+  drawPanel(x0, y0, w0, h0, 1, bg, accent);
+
+  ctx.strokeStyle = "rgba(0,0,0,0.52)";
+  ctx.strokeRect(x0 + 4.5, y0 + 4.5, w0 - 9, h0 - 9);
+  ctx.strokeStyle = "rgba(225,196,131,0.12)";
+  ctx.strokeRect(x0 + 10.5, y0 + 10.5, w0 - 21, h0 - 21);
+
+  const corner = 12;
+  const inner = 6;
+  ctx.strokeStyle = "rgba(214,182,117,0.42)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x0 + inner, y0 + corner); ctx.lineTo(x0 + inner, y0 + inner); ctx.lineTo(x0 + corner, y0 + inner);
+  ctx.moveTo(x0 + w0 - corner, y0 + inner); ctx.lineTo(x0 + w0 - inner, y0 + inner); ctx.lineTo(x0 + w0 - inner, y0 + corner);
+  ctx.moveTo(x0 + inner, y0 + h0 - corner); ctx.lineTo(x0 + inner, y0 + h0 - inner); ctx.lineTo(x0 + corner, y0 + h0 - inner);
+  ctx.moveTo(x0 + w0 - corner, y0 + h0 - inner); ctx.lineTo(x0 + w0 - inner, y0 + h0 - inner); ctx.lineTo(x0 + w0 - inner, y0 + h0 - corner);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawEldenDivider(x0, y0, w0) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(182,151,95,0.28)";
+  ctx.beginPath();
+  ctx.moveTo(x0, y0); ctx.lineTo(x0 + w0, y0);
+  ctx.stroke();
+  ctx.fillStyle = "rgba(210,175,108,0.46)";
+  ctx.fillRect(x0 + w0 / 2 - 20, y0 - 0.5, 40, 1);
+  ctx.restore();
+}
+
 function drawResourcePill(label, value, x0, y0, w0, color) {
   drawPanel(x0, y0, w0, 24, 8, "rgba(255,255,255,0.07)", "rgba(255,255,255,0.08)");
 
@@ -2578,27 +2595,41 @@ function drawResourcePill(label, value, x0, y0, w0, color) {
 }
 
 function drawStatusBar(x0, y0, label, value, max, width, fill) {
-  const ratio = clamp(value / max, 0, 1);
-  const barH = 14;
+  const ratio = clamp(value / Math.max(1, max), 0, 1);
+  const barH = 16;
+  const labelY = y0 - 12;
 
   ctx.save();
+  ctx.font = "bold 15px Georgia, serif";
   ctx.textAlign = "left";
-  ctx.font = "bold 13px Arial";
-  ctx.fillStyle = "rgba(232,223,205,0.86)";
-  ctx.fillText(label, x0, y0 - 8);
+  ctx.fillStyle = "rgba(215,198,162,0.96)";
+  ctx.fillText(label, x0, labelY);
 
-  roundedRectPath(x0, y0, width, barH, 7);
-  ctx.fillStyle = "rgba(255,255,255,0.12)";
-  ctx.fill();
+  ctx.textAlign = "right";
+  ctx.fillStyle = "rgba(182,164,131,0.86)";
+  ctx.font = "14px Georgia, serif";
+  ctx.fillText(`${Math.round(value)} / ${Math.round(max)}`, x0 + width, labelY);
+
+  ctx.fillStyle = "rgba(0,0,0,0.64)";
+  ctx.fillRect(x0 - 5, y0 - 4, width + 10, barH + 8);
+
+  const bg = ctx.createLinearGradient(x0, y0, x0, y0 + barH);
+  bg.addColorStop(0, "rgba(32,28,23,0.98)");
+  bg.addColorStop(1, "rgba(7,7,6,0.98)");
+  ctx.fillStyle = bg;
+  ctx.fillRect(x0, y0, width, barH);
+  ctx.strokeStyle = "rgba(176,141,86,0.34)";
+  ctx.strokeRect(x0 - 0.5, y0 - 0.5, width + 1, barH + 1);
 
   if (ratio > 0) {
-    // 게이지가 낮은 구간에서 "최소 막대 길이" 때문에 멈춰 보이던 문제를 제거한다.
-    // 이전에는 Math.max(barH, width * ratio)를 사용해서 약 7~10% 구간에서
-    // 시각적으로 같은 길이를 유지하다가 갑자기 움직이는 것처럼 보였다.
-    const fillW = Math.max(1, width * ratio);
-    roundedRectPath(x0, y0, fillW, barH, Math.min(7, fillW / 2));
-    ctx.fillStyle = fill;
-    ctx.fill();
+    const fillW = width * ratio;
+    const grad = ctx.createLinearGradient(x0, y0, x0, y0 + barH);
+    grad.addColorStop(0, fill);
+    grad.addColorStop(1, "rgba(18,10,7,0.95)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(x0, y0, fillW, barH);
+    ctx.fillStyle = "rgba(255,232,185,0.22)";
+    ctx.fillRect(x0 + 1, y0 + 1, Math.max(0, fillW - 2), 3);
   }
 
   ctx.restore();
@@ -2606,228 +2637,223 @@ function drawStatusBar(x0, y0, label, value, max, width, fill) {
 
 function drawHUD(w, h) {
   const showTorchBar = getTorchLevel() > 0 || torchPower > 0;
-  const panelW = 250;
-  const rowGap = 37;
-  const topPadding = 32;
-  const bottomPadding = 18;
+  const rowGap = 41;
+  const barW = 252;
   const barCount = showTorchBar ? 4 : 3;
-  const panelH = topPadding + bottomPadding + (barCount - 1) * rowGap + 14;
-  const x0 = 30;
-  const y0 = Math.max(28, h - panelH - 48);
-  const barX = x0 + 20;
-  let barY = y0 + topPadding;
-  const barW = panelW - 40;
+  const panelW = 320;
+  const panelH = 62 + barCount * rowGap + 12;
+  const x0 = 16;
+  const y0 = Math.max(16, h - panelH - 16);
+  const barX = x0 + 22;
+  let barY = y0 + 60;
 
-  drawPanel(x0, y0, panelW, panelH, 16, "rgba(12,10,8,0.58)", "rgba(238,225,196,0.12)");
+  drawOrnatePanel(x0, y0, panelW, panelH, "rgba(184,147,83,0.30)");
+
+  ctx.save();
+  ctx.fillStyle = "rgba(217,194,145,0.88)";
+  ctx.font = "bold 16px Georgia, serif";
+  ctx.textAlign = "left";
+  ctx.fillText("상태", x0 + 18, y0 + 22);
+  drawEldenDivider(x0 + 16, y0 + 32, panelW - 32);
+  ctx.restore();
 
   if (showTorchBar) {
-    drawStatusBar(barX, barY, "횃불", torchPower, Math.max(1, getTorchMax()), barW, "#c9763f");
+    drawStatusBar(barX, barY, "횃불", torchPower, Math.max(1, getTorchMax()), barW - 20, "rgba(201,92,42,0.96)");
     barY += rowGap;
   }
-
-  drawStatusBar(barX, barY, "빛", lightPower, getLightMax(), barW, "#d5aa55");
+  drawStatusBar(barX, barY, "빛", lightPower, getLightMax(), barW - 20, "rgba(218,172,68,0.96)");
   barY += rowGap;
-  drawStatusBar(barX, barY, "정신력", sanity, sanityMax, barW, "#9daec7");
+  drawStatusBar(barX, barY, "정신력", sanity, sanityMax, barW - 20, "rgba(96,124,163,0.94)");
   barY += rowGap;
-  drawStatusBar(barX, barY, "기력", stamina, staminaMax, barW, "#c4b58a");
+  drawStatusBar(barX, barY, "기력", stamina, staminaMax, barW - 20, "rgba(126,170,92,0.94)");
 
-  ctx.strokeStyle = "rgba(255,255,255,0.58)";
+  ctx.strokeStyle = "rgba(226,209,173,0.34)";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(w / 2 - 7, h / 2);
-  ctx.lineTo(w / 2 + 7, h / 2);
-  ctx.moveTo(w / 2, h / 2 - 7);
-  ctx.lineTo(w / 2, h / 2 + 7);
+  ctx.moveTo(w / 2 - 6, h / 2); ctx.lineTo(w / 2 + 6, h / 2);
+  ctx.moveTo(w / 2, h / 2 - 6); ctx.lineTo(w / 2, h / 2 + 6);
   ctx.stroke();
-
-  const target = getTileAhead();
-
-  if (gathering) {
-    drawGatherProgress(w, h);
-    return;
-  }
-
-  if (target.tile !== TILE.EMPTY && target.tile !== TILE.WALL) {
-    const text = getInteractionText(target);
-    ctx.font = "bold 14px Arial";
-    const boxW = Math.max(172, ctx.measureText(text).width + 38);
-    const boxX = w / 2 - boxW / 2;
-
-    drawPanel(boxX, h - 82, boxW, 38, 10, "rgba(14,12,9,0.58)", "rgba(226,206,160,0.12)");
-    ctx.fillStyle = "rgba(240,232,214,0.92)";
-    ctx.textAlign = "center";
-    ctx.fillText(text, w / 2, h - 58);
-    ctx.textAlign = "left";
-  }
 }
 
-function drawInventoryPanel(w, h) {
-  const boxW = 278;
-  const boxH = 236;
-  const x0 = 24;
-  const y0 = Math.max(26, h / 2 - boxH / 2);
-  const items = [
-    ["나무", inventory.wood || 0],
-    ["돌", inventory.stone || 0],
-    ["수정", inventory.crystal || 0],
-    ["석탄", inventory.coal || 0]
-  ];
+function drawGatheringOverlay(w, h) {
+  if (!gathering) return;
 
-  drawPanel(x0, y0, boxW, boxH, 16, "rgba(13,11,8,0.78)", "rgba(238,225,196,0.12)");
-  ctx.fillStyle = "#e6d7b8";
-  ctx.font = "bold 20px Arial";
+  const progress = clamp(gathering.progress / Math.max(1, gathering.duration), 0, 1);
+  const boxW = Math.min(400, w - 40);
+  const boxH = 88;
+  const x0 = Math.floor(w * 0.5 - boxW / 2);
+  const y0 = h - 184;
+
+  drawOrnatePanel(x0, y0, boxW, boxH, "rgba(177,138,78,0.30)");
+
+  ctx.save();
   ctx.textAlign = "left";
-  ctx.fillText("소지품", x0 + 22, y0 + 38);
+  ctx.fillStyle = "rgba(230,210,167,0.94)";
+  ctx.font = "bold 18px Georgia, serif";
+  ctx.fillText(`채집 중 · ${gathering.name}`, x0 + 20, y0 + 28);
 
-  ctx.font = "15px Arial";
-  for (let i = 0; i < items.length; i++) {
-    const rowY = y0 + 74 + i * 36;
-    ctx.fillStyle = "rgba(255,255,255,0.055)";
-    roundedRectPath(x0 + 18, rowY - 19, boxW - 36, 28, 8);
-    ctx.fill();
+  ctx.textAlign = "right";
+  ctx.fillStyle = "rgba(184,168,135,0.82)";
+  ctx.font = "14px Georgia, serif";
+  ctx.fillText(`${Math.round(progress * 100)}%`, x0 + boxW - 18, y0 + 28);
 
-    ctx.fillStyle = "rgba(238,225,196,0.88)";
-    ctx.fillText(items[i][0], x0 + 34, rowY);
-    ctx.textAlign = "right";
-    ctx.fillText(String(items[i][1]), x0 + boxW - 34, rowY);
-    ctx.textAlign = "left";
+  drawEldenDivider(x0 + 18, y0 + 36, boxW - 36);
+
+  const barX = x0 + 20;
+  const barY = y0 + 48;
+  const barW = boxW - 40;
+  const barH = 14;
+  ctx.fillStyle = "rgba(0,0,0,0.62)";
+  ctx.fillRect(barX - 3, barY - 3, barW + 6, barH + 6);
+  ctx.fillStyle = "rgba(25,21,16,0.98)";
+  ctx.fillRect(barX, barY, barW, barH);
+  ctx.strokeStyle = "rgba(151,116,63,0.36)";
+  ctx.strokeRect(barX - 0.5, barY - 0.5, barW + 1, barH + 1);
+  if (progress > 0) {
+    const fillW = barW * progress;
+    const grad = ctx.createLinearGradient(barX, barY, barX, barY + barH);
+    grad.addColorStop(0, "rgba(202,152,79,0.98)");
+    grad.addColorStop(1, "rgba(90,57,29,0.98)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(barX, barY, fillW, barH);
+    ctx.fillStyle = "rgba(255,234,184,0.18)";
+    ctx.fillRect(barX + 1, barY + 1, Math.max(0, fillW - 2), 3);
   }
 
-  ctx.fillStyle = "rgba(238,225,196,0.46)";
-  ctx.font = "12px Arial";
-  ctx.fillText("I 닫기", x0 + 22, y0 + boxH - 22);
-}
-
-function drawGatherProgress(w, h) {
-  const boxW = 340;
-  const boxH = 58;
-  const x0 = w / 2 - boxW / 2;
-  const y0 = h - 96;
-  const ratio = clamp(gathering.progress / gathering.duration, 0, 1);
-
-  drawPanel(x0, y0, boxW, boxH, 8, "rgba(18,15,11,0.82)", "rgba(226,206,160,0.24)");
-
-  ctx.fillStyle = "#eadfca";
-  ctx.font = "bold 14px Arial";
   ctx.textAlign = "left";
-  ctx.fillText(`${gathering.name} 채집 중`, x0 + 18, y0 + 22);
-
-  ctx.fillStyle = "#a99f8d";
-  ctx.font = "12px Arial";
-  ctx.fillText("움직이면 중단됩니다", x0 + 218, y0 + 22);
-
-  drawPanel(x0 + 18, y0 + 34, boxW - 36, 10, 5, "rgba(255,255,255,0.12)", null);
-  drawPanel(x0 + 18, y0 + 34, (boxW - 36) * ratio, 10, 5, "#d7b56c", null);
-  ctx.textAlign = "left";
-}
-
-function getInteractionText(target) {
-  const key = formatKey(controls.interact);
-  const tile = typeof target === "number" ? target : target.tile;
-
-  if (tile === TILE.MAZE_DOOR) {
-    return `${key} 문 ${isDoorOpen(target.tx, target.ty) ? "닫기" : "열기"}`;
-  }
-
-  if (tile === TILE.WORKBENCH) return `${key} 제작대`;
-  if (tile === TILE.STORAGE) return `${key} 보관함`;
-  if (tile === TILE.WOOD) return `${key} 나무 채집`;
-  if (tile === TILE.STONE) return `${key} 돌 채집`;
-  if (tile === TILE.CRYSTAL) return `${key} 수정 채집`;
-  if (tile === TILE.COAL) return `${key} 석탄 채집`;
-  if (tile === TILE.EXIT) return `${key} 깊은 출구`;
-  return `${key} 상호작용`;
+  ctx.fillStyle = "rgba(166,149,119,0.66)";
+  ctx.font = "13px Georgia, serif";
+  ctx.fillText("움직이면 채집이 취소됩니다.", x0 + 20, y0 + 75);
+  ctx.restore();
 }
 
 function getMapTileColor(tile, explored) {
-  if (!explored) return "#070707";
-  if (tile === TILE.WALL) return "#4b4b4b";
-  if (tile === TILE.WOOD) return "#8a6139";
-  if (tile === TILE.STONE) return "#777a80";
-  if (tile === TILE.CRYSTAL) return "#80a8c8";
-  if (tile === TILE.COAL) return "#2e2b28";
-  if (tile === TILE.MAZE_DOOR) return "#80562c";
-  if (tile === TILE.EXIT) return "#b06150";
-  if (tile === TILE.WORKBENCH) return "#9a7442";
-  if (tile === TILE.STORAGE) return "#63768d";
-  return "#191919";
+  if (!explored) return "rgba(9,8,7,0.96)";
+  if (tile === TILE.WALL) return "rgba(48,44,39,1)";
+  if (tile === TILE.MAZE_DOOR) return "rgba(126,92,46,1)";
+  if (tile === TILE.WORKBENCH) return "rgba(147,112,63,1)";
+  if (tile === TILE.WOOD) return "rgba(131,92,49,1)";
+  if (tile === TILE.STONE) return "rgba(121,126,136,1)";
+  if (tile === TILE.CRYSTAL) return "rgba(96,170,215,1)";
+  if (tile === TILE.COAL) return "rgba(67,59,56,1)";
+  if (tile === TILE.EXIT) return "rgba(183,94,68,1)";
+  return "rgba(170,154,126,1)";
 }
 
-function drawPlayerMapMarker(px, py, size, facingLength) {
-  ctx.fillStyle = "#ffffff";
+function drawPlayerMapMarker(cx, cy, size, len) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(degToRad(dir));
+  ctx.fillStyle = "rgba(228,210,176,0.96)";
   ctx.beginPath();
-  ctx.arc(px, py, size, 0, Math.PI * 2);
+  ctx.moveTo(len, 0);
+  ctx.lineTo(-size, size * 0.82);
+  ctx.lineTo(-size * 0.56, 0);
+  ctx.lineTo(-size, -size * 0.82);
+  ctx.closePath();
   ctx.fill();
-
-  if (facingLength <= 0) return;
-
-  ctx.strokeStyle = "#ffffff";
-  ctx.beginPath();
-  ctx.moveTo(px, py);
-  ctx.lineTo(px + cosd(dir) * facingLength, py + sind(dir) * facingLength);
-  ctx.stroke();
+  ctx.restore();
 }
 
 function drawFullMap(w, h) {
-  const panelW = Math.min(w - 60, 760);
-  const panelH = Math.min(h - 70, 760);
-  const size = Math.min(panelW, panelH);
-  const startX = (w - size) / 2;
-  const startY = (h - size) / 2;
+  const boxW = Math.min(w - 80, 620);
+  const boxH = Math.min(h - 80, 620);
+  const x0 = Math.floor((w - boxW) / 2);
+  const y0 = Math.floor((h - boxH) / 2);
+  const drawW = boxW - 48;
+  const drawH = boxH - 72;
+  const cell = Math.min(drawW / mapW, drawH / mapH);
+  const mapDrawW = cell * mapW;
+  const mapDrawH = cell * mapH;
+  const mapX = x0 + (boxW - mapDrawW) / 2;
+  const mapY = y0 + 46;
 
-  ctx.fillStyle = "rgba(0,0,0,0.78)";
-  ctx.fillRect(0, 0, w, h);
-
-  ctx.fillStyle = "#151515";
-  ctx.fillRect(startX - 18, startY - 46, size + 36, size + 74);
-
-  ctx.fillStyle = "#eee";
-  ctx.font = "bold 18px Arial";
-  ctx.fillText(`탐험 지도 - DAY ${day}`, startX, startY - 18);
-
-  const cell = size / Math.max(mapW, mapH);
-  const ox = startX + (size - mapW * cell) / 2;
-  const oy = startY + (size - mapH * cell) / 2;
+  drawOrnatePanel(x0, y0, boxW, boxH, "rgba(184,147,83,0.32)");
+  ctx.save();
+  ctx.fillStyle = "rgba(230,211,172,0.94)";
+  ctx.font = "bold 18px Georgia, serif";
+  ctx.textAlign = "left";
+  ctx.fillText(`지도 · Day ${day}`, x0 + 22, y0 + 24);
+  ctx.fillStyle = "rgba(173,156,124,0.62)";
+  ctx.font = "12px Georgia, serif";
+  ctx.textAlign = "right";
+  ctx.fillText("M 닫기", x0 + boxW - 22, y0 + 24);
+  drawEldenDivider(x0 + 20, y0 + 30, boxW - 40);
 
   for (let yy = 0; yy < mapH; yy++) {
     for (let xx = 0; xx < mapW; xx++) {
-      const tile = level[yy][xx];
       const explored = isTileExplored(xx, yy);
-
-      ctx.fillStyle = getMapTileColor(tile, explored);
-      ctx.fillRect(ox + xx * cell, oy + yy * cell, Math.ceil(cell), Math.ceil(cell));
+      ctx.fillStyle = getMapTileColor(level[yy][xx], explored);
+      ctx.fillRect(mapX + xx * cell, mapY + yy * cell, Math.ceil(cell), Math.ceil(cell));
     }
   }
 
-  const markerLevel = getUpgradeLevel("marker");
+  ctx.strokeStyle = "rgba(201,171,112,0.18)";
+  ctx.strokeRect(mapX - 0.5, mapY - 0.5, mapDrawW + 1, mapDrawH + 1);
+  drawPlayerMapMarker(mapX + x * cell, mapY + y * cell, Math.max(3, cell * 0.35), Math.max(5, cell * 0.55));
+  ctx.restore();
+}
 
-  if (markerLevel >= 1) {
-    const px = ox + x * cell;
-    const py = oy + y * cell;
-    drawPlayerMapMarker(px, py, markerLevel >= 2 ? 5 : 4, markerLevel >= 2 ? 18 : 0);
-  }
+function drawInventoryPanel(w, h) {
+  const boxW = Math.min(w - 80, 500);
+  const boxH = 316;
+  const x0 = Math.floor((w - boxW) / 2);
+  const y0 = Math.floor((h - boxH) / 2);
+  const rows = [
+    ["나무", inventory.wood, "rgba(160,114,59,0.95)"],
+    ["돌", inventory.stone, "rgba(132,137,146,0.95)"],
+    ["수정", inventory.crystal, "rgba(103,176,224,0.95)"],
+    ["석탄", inventory.coal || 0, "rgba(98,86,81,0.95)"]
+  ];
 
-  ctx.fillStyle = "#bdbdbd";
-  ctx.font = "13px Arial";
-  ctx.fillText(`${formatKey(controls.map)} 닫기`, startX, startY + size + 22);
+  drawOrnatePanel(x0, y0, boxW, boxH, "rgba(184,147,83,0.32)");
+  ctx.save();
+  ctx.fillStyle = "rgba(231,212,173,0.94)";
+  ctx.font = "bold 22px Georgia, serif";
+  ctx.textAlign = "left";
+  ctx.fillText("인벤토리", x0 + 24, y0 + 30);
+  ctx.fillStyle = "rgba(171,152,120,0.72)";
+  ctx.font = "14px Georgia, serif";
+  ctx.textAlign = "right";
+  ctx.fillText("I 닫기", x0 + boxW - 24, y0 + 30);
+  drawEldenDivider(x0 + 22, y0 + 38, boxW - 44);
+
+  rows.forEach((row, idx) => {
+    const rowY = y0 + 60 + idx * 50;
+    drawPanel(x0 + 22, rowY, boxW - 44, 38, 1, "rgba(17,15,12,0.72)", "rgba(177,143,84,0.18)");
+    ctx.fillStyle = row[2];
+    ctx.fillRect(x0 + 38, rowY + 14, 12, 12);
+    ctx.fillStyle = "rgba(224,207,173,0.92)";
+    ctx.font = "16px Georgia, serif";
+    ctx.textAlign = "left";
+    ctx.fillText(row[0], x0 + 60, rowY + 25);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "rgba(204,188,156,0.9)";
+    ctx.fillText(String(row[1]), x0 + boxW - 40, rowY + 25);
+  });
+
+  ctx.fillStyle = "rgba(168,149,118,0.64)";
+  ctx.font = "13px Georgia, serif";
+  ctx.textAlign = "left";
+  ctx.fillText("중앙 방과 미로에서 얻은 재료입니다.", x0 + 24, y0 + boxH - 24);
+  ctx.restore();
 }
 
 function drawMiniMap(w, h) {
-  const size = 158;
+  const size = 188;
   const radius = 12;
-  const x0 = w - size - 18;
-  const y0 = w < 760 ? 126 : 18;
+  const x0 = w - size - 24;
+  const y0 = w < 760 ? 132 : 22;
   const cells = radius * 2 + 1;
   const cell = size / cells;
   const px = Math.floor(x);
   const py = Math.floor(y);
 
-  drawPanel(x0 - 8, y0 - 28, size + 16, size + 36, 8, "rgba(18,15,11,0.78)", "rgba(224,198,142,0.18)");
-
-  ctx.fillStyle = "#d8bd78";
-  ctx.font = "bold 12px Arial";
+  drawOrnatePanel(x0 - 12, y0 - 34, size + 24, size + 48, "rgba(184,147,83,0.28)");
+  ctx.fillStyle = "rgba(224,205,162,0.9)";
+  ctx.font = "bold 15px Georgia, serif";
   ctx.textAlign = "center";
-  ctx.fillText("지도", x0 + size / 2, y0 - 10);
+  ctx.fillText("지도", x0 + size / 2, y0 - 14);
   ctx.textAlign = "left";
 
   for (let yy = -radius; yy <= radius; yy++) {
@@ -2839,35 +2865,66 @@ function drawMiniMap(w, h) {
       const inBounds = tx >= 0 && tx < mapW && ty >= 0 && ty < mapH;
       const tile = inBounds ? level[ty][tx] : TILE.WALL;
       const explored = inBounds && isTileExplored(tx, ty);
-
       ctx.fillStyle = getMapTileColor(tile, explored);
       ctx.fillRect(sx, sy, Math.ceil(cell), Math.ceil(cell));
     }
   }
 
-  drawPlayerMapMarker(x0 + size / 2, y0 + size / 2, 4, 13);
+  ctx.strokeStyle = "rgba(198,166,104,0.18)";
+  ctx.strokeRect(x0 - 0.5, y0 - 0.5, size + 1, size + 1);
+  drawPlayerMapMarker(x0 + size / 2, y0 + size / 2, 5, 14);
 }
 
 function drawCraftRow(x0, y0, key, title, cost, note, done) {
-  drawPanel(x0, y0, 394, 42, 10, done ? "rgba(120,126,96,0.12)" : "rgba(255,255,255,0.045)", "rgba(255,255,255,0.055)");
+  const rowW = 452;
+  const rowH = 52;
+  const fill = done ? "rgba(62,58,38,0.42)" : "rgba(17,13,9,0.56)";
+  drawPanel(x0, y0, rowW, rowH, 2, fill, "rgba(190,165,115,0.15)");
 
-  ctx.fillStyle = "rgba(214,188,128,0.15)";
-  roundedRectPath(x0 + 10, y0 + 9, 24, 24, 7);
-  ctx.fill();
+  ctx.fillStyle = "rgba(7,5,3,0.64)";
+  ctx.fillRect(x0 + 10, y0 + 10, 30, 30);
+  ctx.strokeStyle = "rgba(214,180,108,0.28)";
+  ctx.strokeRect(x0 + 10.5, y0 + 10.5, 29, 29);
 
-  ctx.fillStyle = "rgba(230,215,184,0.88)";
-  ctx.font = "bold 12px Arial";
+  ctx.fillStyle = "rgba(219,199,152,0.86)";
+  ctx.font = "bold 15px Georgia, serif";
   ctx.textAlign = "center";
-  ctx.fillText(key, x0 + 22, y0 + 26);
+  ctx.fillText(key, x0 + 25, y0 + 31);
 
   ctx.textAlign = "left";
-  ctx.fillStyle = "rgba(238,225,196,0.92)";
-  ctx.font = "bold 13px Arial";
-  ctx.fillText(title, x0 + 44, y0 + 17);
+  ctx.fillStyle = "rgba(229,215,184,0.94)";
+  ctx.font = "bold 16px Georgia, serif";
+  ctx.fillText(title, x0 + 54, y0 + 20);
 
-  ctx.fillStyle = "rgba(238,225,196,0.48)";
-  ctx.font = "11px Arial";
-  ctx.fillText(done ? note : `${cost} · ${note}`, x0 + 44, y0 + 32);
+  ctx.fillStyle = "rgba(190,176,140,0.72)";
+  ctx.font = "13px Georgia, serif";
+  ctx.fillText(done ? note : `${cost}  ·  ${note}`, x0 + 54, y0 + 38);
+}
+
+function drawCraftRow(x0, y0, key, title, cost, note, done) {
+  const rowW = 404;
+  const rowH = 44;
+  const fill = done ? "rgba(62,58,38,0.42)" : "rgba(17,13,9,0.56)";
+  drawPanel(x0, y0, rowW, rowH, 2, fill, "rgba(190,165,115,0.15)");
+
+  ctx.fillStyle = "rgba(7,5,3,0.64)";
+  ctx.fillRect(x0 + 8, y0 + 8, 26, 26);
+  ctx.strokeStyle = "rgba(214,180,108,0.28)";
+  ctx.strokeRect(x0 + 8.5, y0 + 8.5, 25, 25);
+
+  ctx.fillStyle = "rgba(219,199,152,0.86)";
+  ctx.font = "bold 13px Georgia, serif";
+  ctx.textAlign = "center";
+  ctx.fillText(key, x0 + 21, y0 + 27);
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = "rgba(229,215,184,0.94)";
+  ctx.font = "bold 14px Georgia, serif";
+  ctx.fillText(title, x0 + 48, y0 + 17);
+
+  ctx.fillStyle = "rgba(190,176,140,0.62)";
+  ctx.font = "11px Georgia, serif";
+  ctx.fillText(done ? note : `${cost}  ·  ${note}`, x0 + 48, y0 + 33);
 }
 
 function getMachineUpgradeName(level) {
@@ -2891,7 +2948,7 @@ function getVisibleCraftRows() {
 
   if (isCraftUnlocked("craftTech")) {
     const techNames = ["제작 기술 Lv 1", "제작 기술 Lv 2", "제작 기술 Lv 3", "제작 기술 Lv 4", "제작 기술 Lv 5"];
-    const notes = ["기초 제작 해금", "제작대와 횃불 계열 해금", "랜턴과 수동 제작 분기 해금", "상위 제작 확장", "후반 장치 계열 해금"];
+    const notes = ["기초 제작 해금", "제작대와 횃불 계열 해금", "랜턴과 보조 제작품 해금", "상위 제작 확장", "후반 장치 계열 해금"];
     add("craftTech", techNames[techLevel] || "제작 기술", formatCost(getCostForCraftItem("craftTech")), notes[techLevel] || "새 제작품 해금");
   }
 
@@ -2909,26 +2966,6 @@ function getVisibleCraftRows() {
     add("workbench", names[workbenchLevel] || "제작대", formatCost(getCostForCraftItem("workbench")), workbenchLevel === 0 ? "메인공간 기본 위치에 설치" : "제작 기능 확장");
   }
 
-  if (isCraftUnlocked("gemCrafter")) {
-    const names = ["수정 세공기 Lv 1", "수정 세공기 Lv 2", "수정 세공기 Lv 3"];
-    add("gemCrafter", names[getGemCrafterLevel()] || "수정 세공기", formatCost(getCostForCraftItem("gemCrafter")), "장신구 계열 해금");
-  }
-
-  if (isCraftUnlocked("restStone")) {
-    add("restStone", "안식의 돌", formatCost(getCostForCraftItem("restStone")), "이동 속도 + / 정신력 감소 -");
-  }
-
-  if (isCraftUnlocked("accessory")) {
-    const names = ["장신구 2", "장신구 3", "장신구 4", "장신구 5", "장신구 6"];
-    const notes = ["정신력 최대치 +10", "정신력 감소 완화", "정신력 최대치 +10", "정신력 감소 완화", "정신력 최대치 +10"];
-    const idx = getAccessoryLevel();
-    add("accessory", names[idx] || "장신구", formatCost(getCostForCraftItem("accessory")), notes[idx] || "장신구 계열 강화");
-  }
-
-  if (isCraftUnlocked("gemPolisher")) {
-    add("gemPolisher", "수정 연마기", formatCost(getCostForCraftItem("gemPolisher")), "장신구 강화 보조 장치");
-  }
-
   if (isCraftUnlocked("machineWorkbench")) {
     add("machineWorkbench", "기계 제작대 Lv 1", formatCost(getCostForCraftItem("machineWorkbench")), "기계 업그레이드 해금");
   }
@@ -2944,15 +2981,15 @@ function getVisibleCraftRows() {
   }
 
   if (isCraftUnlocked("manualCrafter")) {
-    add("manualCrafter", "포션 제작기 Lv 1", formatCost(getCostForCraftItem("manualCrafter")), "상위 포션 계열 제작 해금");
+    add("manualCrafter", "수동 제작기 Lv 1", formatCost(getCostForCraftItem("manualCrafter")), "상위 수동 제작품 해금");
   }
 
   if (isCraftUnlocked("restStone")) {
-    add("restStone", "초급 정신력 회복 포션", formatCost(getCostForCraftItem("restStone")), "정신력 회복 계열 제작품");
+    add("restStone", "안식의 돌", formatCost(getCostForCraftItem("restStone")), "이동 속도 + / 정신력 감소 완화");
   }
 
   if (isCraftUnlocked("potionWorkbench")) {
-    add("potionWorkbench", "수동 생성기 Lv 1", formatCost(getCostForCraftItem("potionWorkbench")), "상위 생성기 계열 해금");
+    add("potionWorkbench", "포션 제작기 Lv 1", formatCost(getCostForCraftItem("potionWorkbench")), "정신력 회복 포션 해금");
   }
 
   if (isCraftUnlocked("basicSanityPotion")) {
@@ -2970,15 +3007,15 @@ function getVisibleCraftRows() {
 
   if (isCraftUnlocked("lantern")) {
     const names = ["랜턴 Lv 1", "랜턴 Lv 2"];
-    add("lantern", names[lanternLevel] || "랜턴", formatCost(getCostForCraftItem("lantern")), lanternLevel === 0 ? "불빛 거리 증가" : "불빛 유지 효율 증가");
+    add("lantern", names[lanternLevel] || "랜턴", formatCost(getCostForCraftItem("lantern")), "석탄으로 빛 유지");
   }
 
   if (isCraftUnlocked("boots") && bootsLevel < CRAFT_COSTS.boots.length) {
-    add("boots", bootsLevel === 0 ? "XX Lv 1" : "XX Lv 2", formatCost(getCostForCraftItem("boots")), bootsLevel === 0 ? "아이템 소모 감소" : "추가 강화" );
+    add("boots", "다른 아이템", formatCost(getCostForCraftItem("boots")), "이동 보조 제작품");
   }
 
   if (isCraftUnlocked("marker") && markerLevel < CRAFT_COSTS.marker.length) {
-    add("marker", markerLevel === 0 ? "Xx Lv 1" : "Xx Lv 2", formatCost(getCostForCraftItem("marker")), markerLevel === 0 ? "아이템 속도 감소" : "추가 효율" );
+    add("marker", "지도 보강", formatCost(getCostForCraftItem("marker")), markerLevel + 1 >= 2 ? "미니맵 활성화" : "내 위치 표시");
   }
 
   return rows;
@@ -2989,39 +3026,39 @@ function drawCraftPanel(w, h) {
   const rows = getVisibleCraftRows();
   craftHotkeys = {};
 
-  const rowH = 50;
-  const boxW = 430;
-  const boxH = Math.min(h - 54, 88 + Math.max(1, rows.length) * rowH + 34);
-  const x0 = Math.max(24, w - boxW - 28);
-  const y0 = 28;
+  const rowH = 56;
+  const boxW = Math.min(482, w - 30);
+  const boxH = Math.min(h - 52, 102 + Math.max(1, rows.length) * rowH + 34);
+  const x0 = Math.max(16, w - boxW - 18);
+  const y0 = 18;
 
-  drawPanel(x0, y0, boxW, boxH, 16, "rgba(13,11,8,0.78)", "rgba(238,225,196,0.12)");
+  drawOrnatePanel(x0, y0, boxW, boxH, "rgba(184,147,83,0.28)");
 
-  ctx.fillStyle = "#e6d7b8";
-  ctx.font = "bold 20px Arial";
+  ctx.fillStyle = "rgba(232,213,174,0.95)";
+  ctx.font = "bold 22px Georgia, serif";
   ctx.textAlign = "left";
-  ctx.fillText("제작", x0 + 22, y0 + 36);
-
-  ctx.fillStyle = "rgba(238,225,196,0.50)";
-  ctx.font = "12px Arial";
-  ctx.fillText("조건을 만족한 작업만 표시됩니다", x0 + 22, y0 + 56);
+  ctx.fillText("제작", x0 + 24, y0 + 30);
+  ctx.fillStyle = "rgba(177,160,127,0.72)";
+  ctx.font = "14px Georgia, serif";
+  ctx.fillText("조건이 맞는 작업만 드러납니다.", x0 + 24, y0 + 50);
+  drawEldenDivider(x0 + 22, y0 + 60, boxW - 44);
 
   if (rows.length === 0) {
-    ctx.fillStyle = "rgba(238,225,196,0.70)";
-    ctx.font = "13px Arial";
-    ctx.fillText("지금 만들 수 있는 것이 없습니다.", x0 + 22, y0 + 92);
+    ctx.fillStyle = "rgba(220,204,166,0.72)";
+    ctx.font = "15px Georgia, serif";
+    ctx.fillText("지금 만들 수 있는 것이 없습니다.", x0 + 24, y0 + 102);
   }
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const key = String((i % 9) + 1);
     craftHotkeys[`Digit${key}`] = row.item;
-    drawCraftRow(x0 + 18, y0 + 78 + i * rowH, key, row.title, row.cost, row.note, row.done);
+    drawCraftRow(x0 + 14, y0 + 72 + i * rowH, key, row.title, row.cost, row.note, row.done);
   }
 
-  ctx.fillStyle = "rgba(238,225,196,0.42)";
-  ctx.font = "12px Arial";
-  ctx.fillText("C 닫기", x0 + 22, y0 + boxH - 18);
+  ctx.fillStyle = "rgba(170,152,120,0.64)";
+  ctx.font = "13px Georgia, serif";
+  ctx.fillText("C 닫기", x0 + 24, y0 + boxH - 18);
 }
 
 function gameLoop() {
@@ -3058,24 +3095,25 @@ resetGameBtn.addEventListener("click", () => {
 });
 
 closeTestBtn.addEventListener("click", closeTestPanel);
-applyTestBtn.addEventListener("click", applyTestValues);
+applyTestBtn.addEventListener("click", () => queueTestApply("테스트 값 적용"));
 
 fillTestBtn.addEventListener("click", () => {
   testWood.value = "99";
   testStone.value = "99";
   testCrystal.value = "99";
   if (testCoal) testCoal.value = "99";
-  testStamina.value = "100";
-  if (testSanity) testSanity.value = "100";
-  if (testLight) testLight.value = "100";
   testBoots.value = String(CRAFT_COSTS.boots.length);
   testMarker.value = String(CRAFT_COSTS.marker.length);
   if (testWorkbench) testWorkbench.checked = true;
   if (testLantern) testLantern.value = String(CRAFT_COSTS.lantern.length);
   if (testPortableWorkbench) testPortableWorkbench.value = String(CRAFT_COSTS.craftTech.length);
   if (testInfiniteLantern) testInfiniteLantern.checked = true;
-  applyTestValues();
-  showMessage("테스트 값 적용 - 제작 기술 테크트리 포함");
+
+  testStamina.value = "150";
+  if (testSanity) testSanity.value = "100";
+  if (testLight) testLight.value = "300";
+
+  queueTestApply("테스트 값 적용 - 넉넉히 채우기 완료");
 });
 
 sensitivitySlider.addEventListener("input", () => {
