@@ -19,8 +19,26 @@ const hudCanvas = document.getElementById("hud");
 const ctx = hudCanvas.getContext("2d");
 
 const menu = document.getElementById("menu");
+console.log("MTA build v74 loaded");
 const startBtn = document.getElementById("startBtn");
 const messageBox = document.getElementById("message");
+
+window.addEventListener("error", (event) => {
+  console.error(event.error || event.message);
+  if (messageBox) {
+    messageBox.textContent = "오류: " + (event.message || "스크립트 실행 오류");
+    messageBox.classList.add("show");
+  }
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  console.error(event.reason);
+  if (messageBox) {
+    messageBox.textContent = "오류: " + (event.reason?.message || event.reason || "비동기 실행 오류");
+    messageBox.classList.add("show");
+  }
+});
+
 const settingsScreen = document.getElementById("settings");
 const closeSettingsBtn = document.getElementById("closeSettingsBtn");
 const resetControlsBtn = document.getElementById("resetControlsBtn");
@@ -73,8 +91,8 @@ scene3d.add(ambientLight);
 let worldRoot = null;
 let renderPixelRatio = 1;
 const doorVisuals = new Map();
-const DOOR_OPEN_ANGLE = Math.PI * 0.52;
-const DOOR_ANIMATION_SPEED = 0.16;
+const DOOR_OPEN_ANGLE = Math.PI * 0.64;
+const DOOR_ANIMATION_SPEED = 0.018;
 
 const FLOOR_Y = 0;
 const WALL_HEIGHT = 2.4;
@@ -110,7 +128,8 @@ const materials = {
   coal: new THREE.MeshStandardMaterial({ color: 0x1d1c1a, roughness: 0.92, metalness: 0.04 }),
   workbench: new THREE.MeshStandardMaterial({ color: 0x9a7040, roughness: 0.82, metalness: 0.03 }),
   storage: new THREE.MeshStandardMaterial({ color: 0x5f7186, roughness: 0.76, metalness: 0.03 }),
-  exit: new THREE.MeshStandardMaterial({ color: 0xd76b51, emissive: 0x9c2a18, emissiveIntensity: 1.2, roughness: 0.45, metalness: 0.02, transparent: true, opacity: 0.84 })
+  exit: new THREE.MeshStandardMaterial({ color: 0xd76b51, emissive: 0x9c2a18, emissiveIntensity: 1.2, roughness: 0.45, metalness: 0.02, transparent: true, opacity: 0.84 }),
+  pit: new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.98 })
 };
 
 const resourceMaterials = {
@@ -139,6 +158,69 @@ const DEFAULT_CONTROLS = {
   reroll: "KeyR"
 };
 
+const CONTROL_FALLBACKS = {
+  forward: ["KeyW", "ArrowUp"],
+  back: ["KeyS", "ArrowDown"],
+  left: ["KeyA", "ArrowLeft"],
+  right: ["KeyD", "ArrowRight"],
+  run: ["ShiftLeft", "ShiftRight"],
+  interact: ["KeyE"],
+  map: ["KeyM"],
+  craft: ["KeyC"],
+  reroll: ["KeyR"]
+};
+
+function getControlCode(action) {
+  const code = controls[action];
+  return typeof code === "string" && code.length > 0 ? code : DEFAULT_CONTROLS[action];
+}
+
+function isControlDown(action) {
+  const main = getControlCode(action);
+  if (main && keys[main]) return true;
+
+  const fallbacks = CONTROL_FALLBACKS[action] || [];
+  return fallbacks.some((code) => keys[code]);
+}
+
+function matchesControl(action, code) {
+  if (code === getControlCode(action)) return true;
+  return (CONTROL_FALLBACKS[action] || []).includes(code);
+}
+
+function isMovementInputCode(code) {
+  return (
+    matchesControl("forward", code) ||
+    matchesControl("back", code) ||
+    matchesControl("left", code) ||
+    matchesControl("right", code) ||
+    matchesControl("run", code)
+  );
+}
+
+function sanitizeControls() {
+  const next = { ...DEFAULT_CONTROLS };
+
+  for (const action of Object.keys(DEFAULT_CONTROLS)) {
+    const code = controls[action];
+    next[action] = typeof code === "string" && code.length > 0 ? code : DEFAULT_CONTROLS[action];
+  }
+
+  const reservedMovement = new Set([
+    "KeyW", "KeyA", "KeyS", "KeyD",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+    "ShiftLeft", "ShiftRight"
+  ]);
+
+  for (const action of ["interact", "map", "craft", "reroll"]) {
+    if (reservedMovement.has(next[action])) {
+      next[action] = DEFAULT_CONTROLS[action];
+    }
+  }
+
+  controls = next;
+}
+
 const TILE = {
   EMPTY: 0,
   WALL: 1,
@@ -149,7 +231,8 @@ const TILE = {
   COAL: 6,
   WORKBENCH: 7,
   STORAGE: 8,
-  MAZE_DOOR: 9
+  MAZE_DOOR: 9,
+  PIT: 10
 };
 
 const RESOURCE_TYPES = {
@@ -276,6 +359,12 @@ const CONFIG = {
 
 let gameStarted = false;
 let scene = "base";
+let tutorialMode = false;
+let tutorialDoorKey = "";
+let tutorialExitDoorKey = "";
+let tutorialTitle = "";
+let tutorialTitleTimer = 0;
+let tutorialFall = null;
 
 let mapW = 0;
 let mapH = 0;
@@ -353,6 +442,168 @@ let crafted = {
 
 let messageTimer = 0;
 let craftHotkeys = {};
+
+// ── 시각 연출 ──────────────────────────────────────────────────────────────
+let screenFade = 0;
+let screenFadeTarget = 0;
+let screenFadeSpeed = 0.04;
+
+// 스탯 변화 플래시 (바가 갑자기 줄어들 때 깜빡임)
+const statFlash = { stamina: 0, sanity: 0, light: 0, torch: 0 };
+// 스탯 이전값 (변화량 감지)
+const statPrev = { stamina: 100, sanity: 100, light: 60, torch: 0 };
+
+// 채집 아이콘 펄스
+let gatherPulse = 0;
+
+// 화면 흔들림 (어둠 속 정신력 하락 시)
+let screenShake = { x: 0, y: 0, intensity: 0, timer: 0 };
+
+// 알림 큐 (기존 단순 메시지 박스 대신 다중 알림 지원)
+const notifQueue = [];
+let notifTimer = 0;
+const NOTIF_DURATION = 210;
+
+// ── 오디오 ────────────────────────────────────────────────────────────────
+let audioCtx = null;
+const audioEnabled = { value: false };
+
+function getAudioCtx() {
+  if (!audioCtx) {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      audioEnabled.value = true;
+    } catch { audioEnabled.value = false; }
+  }
+  if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => {});
+  }
+  return audioCtx;
+}
+
+function playTone(freq, type, duration, gainVal, fadeOut = true, delay = 0) {
+  const ac = getAudioCtx();
+  if (!ac || !audioEnabled.value) return null;
+  try {
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain);
+    gain.connect(ac.destination);
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, ac.currentTime + delay);
+    gain.gain.setValueAtTime(gainVal, ac.currentTime + delay);
+    if (fadeOut) gain.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + delay + duration);
+    osc.start(ac.currentTime + delay);
+    osc.stop(ac.currentTime + delay + duration + 0.02);
+    return { osc, gain };
+  } catch { return null; }
+}
+
+function playNoise(duration, gainVal, freq = 800, q = 1) {
+  const ac = getAudioCtx();
+  if (!ac || !audioEnabled.value) return;
+  try {
+    const bufferSize = Math.floor(ac.sampleRate * duration);
+    const buffer = ac.createBuffer(1, bufferSize, ac.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+    const source = ac.createBufferSource();
+    source.buffer = buffer;
+    const filter = ac.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.value = freq;
+    filter.Q.value = q;
+    const gain = ac.createGain();
+    gain.gain.setValueAtTime(gainVal, ac.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + duration);
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(ac.destination);
+    source.start();
+    source.stop(ac.currentTime + duration + 0.02);
+  } catch {}
+}
+
+// 게임 사운드 이벤트들
+const SFX = {
+  // 문 열기: 삐걱 + 쿵
+  doorOpen() {
+    playNoise(0.18, 0.12, 320, 2.5);
+    playTone(180, "sawtooth", 0.22, 0.06, true, 0.04);
+    playTone(90, "sine", 0.3, 0.14, true, 0.20);
+  },
+  // 문 닫기
+  doorClose() {
+    playTone(90, "sine", 0.28, 0.18, true, 0);
+    playNoise(0.12, 0.08, 280, 2);
+  },
+  // 채집 시작
+  gatherStart(resource) {
+    const freqMap = { wood: 320, stone: 220, crystal: 880, coal: 200 };
+    const f = freqMap[resource] || 300;
+    playTone(f, "triangle", 0.15, 0.08);
+  },
+  // 채집 틱 (주기적)
+  gatherTick(resource) {
+    const freqMap = { wood: 280, stone: 180, crystal: 740, coal: 170 };
+    const f = freqMap[resource] || 260;
+    playNoise(0.06, 0.04, f, 1.5);
+  },
+  // 채집 완료
+  gatherDone(resource) {
+    const freqMap = { wood: 440, stone: 330, crystal: 1047, coal: 293 };
+    const f = freqMap[resource] || 440;
+    playTone(f, "sine", 0.12, 0.15);
+    playTone(f * 1.5, "sine", 0.18, 0.08, true, 0.08);
+  },
+  // 제작 완료
+  craftDone() {
+    playTone(523, "sine", 0.1, 0.12);
+    playTone(659, "sine", 0.12, 0.10, true, 0.09);
+    playTone(784, "sine", 0.18, 0.14, true, 0.18);
+  },
+  // 재료 부족 실패
+  craftFail() {
+    playTone(220, "sawtooth", 0.1, 0.08);
+    playTone(180, "sawtooth", 0.14, 0.06, true, 0.08);
+  },
+  // 발걸음 (바닥 재질별)
+  footstep(isRunning, inBase) {
+    const freq = inBase ? 120 : 100;
+    const gain = isRunning ? 0.07 : 0.04;
+    playNoise(0.06, gain, freq, 0.8);
+  },
+  // 빛 부족 경고
+  lightLow() {
+    playTone(330, "sine", 0.2, 0.06);
+    playTone(310, "sine", 0.3, 0.04, true, 0.2);
+  },
+  // 정신력 경고 (불협화음)
+  sanityLow() {
+    playTone(220, "sawtooth", 0.4, 0.05);
+    playTone(233, "sine", 0.5, 0.03, true, 0.05);
+  },
+  // 메뉴 열기
+  menuOpen() {
+    playTone(660, "sine", 0.08, 0.06);
+    playTone(880, "sine", 0.1, 0.04, true, 0.06);
+  },
+  // 씬 전환 (튜토 → 메인)
+  sceneTransition() {
+    playTone(196, "sine", 0.6, 0.12);
+    playTone(246, "sine", 0.5, 0.08, true, 0.15);
+    playTone(294, "sine", 0.7, 0.1, true, 0.35);
+  }
+};
+
+// 발걸음 타이머
+let footstepTimer = 0;
+const FOOTSTEP_WALK_INTERVAL = 28;
+const FOOTSTEP_RUN_INTERVAL = 16;
+
+// 빛/정신력 경고 쿨다운
+let lightWarnTimer = 0;
+let sanityWarnTimer = 0;
 
 
 function setRendererColorSpace(targetRenderer) {
@@ -537,7 +788,7 @@ function resizeCanvas() {
 }
 
 function requestGamePointerLock() {
-  if (!gameStarted || settingsOpen || testOpen || document.pointerLockElement === canvas) return;
+  if (!gameStarted || isInputBlockedByPanel() || document.pointerLockElement === canvas) return;
 
   try {
     const result = canvas.requestPointerLock();
@@ -557,6 +808,208 @@ function getStoredDay() {
 
 function getDailySeed(value) {
   return value * 92821 + 173;
+}
+
+function hasTutorialDone() {
+  return localStorage.getItem("mta_tutorial_done") === "true";
+}
+
+function setTutorialDone(done) {
+  if (done) localStorage.setItem("mta_tutorial_done", "true");
+  else localStorage.removeItem("mta_tutorial_done");
+}
+
+function showTutorialTitle(text, frames = 150) {
+  tutorialTitle = text;
+  tutorialTitleTimer = frames;
+  hideMessage();
+}
+
+function updateTutorialTitle() {
+  if (tutorialTitleTimer > 0) tutorialTitleTimer--;
+}
+
+function update() {
+  if (!gameStarted || isInputBlockedByPanel() || gameOver) return;
+
+  updateTutorialTitle();
+
+  if (updateTutorialFall()) {
+    updateDoorAnimations();
+    updateMessage();
+    return;
+  }
+
+  if (!mapOpen && !gathering) {
+    const lookScale = mouseSensitivity * CONFIG.rotSpeed * 180 / Math.PI;
+    dir += mouse.dx * lookScale;
+    pitch = clamp(pitch - mouse.dy * lookScale, -72, 72);
+  }
+
+  mouse.dx = 0;
+  mouse.dy = 0;
+
+  if (gathering) updateGathering();
+  else updateMovement();
+
+  updateDoorAnimations();
+  updateSceneFromPosition();
+  checkTutorialPit();
+  checkTutorialExitDoor();
+  updateSurvivalSystems();
+  if (revealAroundPlayer()) saveProgress();
+  updateMessage();
+
+  // ── 시각/오디오 이펙트 업데이트 ──────────────────────────────
+  // screenFade 보간
+  if (Math.abs(screenFade - screenFadeTarget) > 0.001) {
+    screenFade += (screenFadeTarget - screenFade) * 0.06;
+  } else {
+    screenFade = screenFadeTarget;
+  }
+
+  // stat 플래시 감쇠
+  for (const k of Object.keys(statFlash)) statFlash[k] = Math.max(0, statFlash[k] - 0.04);
+
+  // stat 변화 감지 → 플래시 트리거
+  const eps = 0.5;
+  if (statPrev.stamina - stamina > eps) statFlash.stamina = 1;
+  if (statPrev.sanity - sanity > eps) statFlash.sanity = 1;
+  if (statPrev.light - lightPower > eps) statFlash.light = 1;
+  if (statPrev.torch - torchPower > eps) statFlash.torch = 1;
+  statPrev.stamina = stamina;
+  statPrev.sanity = sanity;
+  statPrev.light = lightPower;
+  statPrev.torch = torchPower;
+
+  // 채집 펄스 애니메이션
+  if (gathering) gatherPulse = (gatherPulse + 0.08) % (Math.PI * 2);
+  else gatherPulse = 0;
+
+  // 화면 흔들림 감쇠
+  if (screenShake.timer > 0) {
+    screenShake.timer--;
+    const amp = screenShake.intensity * (screenShake.timer / 12);
+    screenShake.x = (Math.random() - 0.5) * amp;
+    screenShake.y = (Math.random() - 0.5) * amp;
+  } else {
+    screenShake.x = 0;
+    screenShake.y = 0;
+  }
+
+  // 어둠 속 정신력 위험 시 화면 흔들림 + 경고음
+  const inMaze = scene !== "base" && !tutorialMode;
+  if (inMaze && lightPower <= 0 && sanity < 40) {
+    if (sanity < 15 && Math.random() < 0.015) {
+      screenShake.intensity = 6 + (1 - sanity / 15) * 8;
+      screenShake.timer = 12;
+    }
+    sanityWarnTimer--;
+    if (sanityWarnTimer <= 0) {
+      SFX.sanityLow();
+      sanityWarnTimer = Math.floor(200 - (1 - sanity / 40) * 140);
+    }
+  } else {
+    if (sanityWarnTimer > 0) sanityWarnTimer--;
+  }
+
+  // 빛 부족 경고음
+  if (inMaze && lightPower < getLightMax() * 0.18 && torchPower <= 0) {
+    lightWarnTimer--;
+    if (lightWarnTimer <= 0) {
+      SFX.lightLow();
+      lightWarnTimer = 240;
+    }
+  } else {
+    if (lightWarnTimer > 0) lightWarnTimer--;
+  }
+
+  // 발걸음 사운드
+  const moving = isControlDown("forward") || isControlDown("back") || isControlDown("left") || isControlDown("right");
+  if (moving && !gathering && gameStarted) {
+    const running = sprintActive && !runLockedByStamina;
+    const interval = running ? FOOTSTEP_RUN_INTERVAL : FOOTSTEP_WALK_INTERVAL;
+    footstepTimer--;
+    if (footstepTimer <= 0) {
+      SFX.footstep(running, scene === "base");
+      footstepTimer = interval;
+    }
+  } else {
+    if (footstepTimer > 0) footstepTimer--;
+  }
+
+  // 알림 큐 타이머
+  if (notifTimer > 0) notifTimer--;
+  else if (notifQueue.length > 0) notifQueue.shift();
+}
+
+function isTutorialDoor(tx, ty) {
+  return tutorialMode && getResourceKey(tx, ty) === tutorialDoorKey;
+}
+
+function isTutorialExitDoor(tx, ty) {
+  return tutorialMode && getResourceKey(tx, ty) === tutorialExitDoorKey;
+}
+
+function isTutorialAnyGate(tx, ty) {
+  return isTutorialDoor(tx, ty) || isTutorialExitDoor(tx, ty);
+}
+
+function getTutorialGateCenter(tx, ty) {
+  if (!tutorialMode) return null;
+
+  if (tutorialDoorKey) {
+    const [gx, gy] = tutorialDoorKey.split(",").map(Number);
+    if (ty === gy && Math.abs(tx - gx) <= 1) return { x: gx, y: gy, key: tutorialDoorKey, exit: false };
+  }
+
+  if (tutorialExitDoorKey) {
+    const [gx, gy] = tutorialExitDoorKey.split(",").map(Number);
+    if (ty === gy && Math.abs(tx - gx) <= 1) return { x: gx, y: gy, key: tutorialExitDoorKey, exit: true };
+  }
+
+  return null;
+}
+
+function isTutorialGateSideTile(tx, ty) {
+  const gate = getTutorialGateCenter(tx, ty);
+  return !!gate && getResourceKey(tx, ty) !== gate.key;
+}
+
+function forEachTutorialGateTile(tx, ty, callback) {
+  const gate = getTutorialGateCenter(tx, ty);
+  if (!gate) {
+    callback(tx, ty);
+    return;
+  }
+
+  for (let gx = gate.x - 1; gx <= gate.x + 1; gx++) {
+    callback(gx, gate.y);
+  }
+}
+
+function getDoorVisualOpenProgress(tx, ty) {
+  const gate = getTutorialGateCenter(tx, ty);
+  const key = gate ? gate.key : getResourceKey(tx, ty);
+  const visual = doorVisuals.get(key);
+
+  if (!visual) return isDoorOpen(tx, ty) ? 1 : 0;
+
+  if (visual.rightPanel) {
+    const leftTarget = Math.abs(visual.targetRotation || DOOR_OPEN_ANGLE);
+    const rightTarget = Math.abs(visual.rightTargetRotation || DOOR_OPEN_ANGLE);
+    const leftProgress = leftTarget > 0 ? Math.abs(visual.panel.rotation.y) / leftTarget : 1;
+    const rightProgress = rightTarget > 0 ? Math.abs(visual.rightPanel.rotation.y) / rightTarget : 1;
+    return clamp(Math.min(leftProgress, rightProgress), 0, 1);
+  }
+
+  const target = Math.abs(visual.targetRotation || DOOR_OPEN_ANGLE);
+  return target > 0 ? clamp(Math.abs(visual.panel.rotation.y) / target, 0, 1) : 1;
+}
+
+function isDoorFullyOpen(tx, ty) {
+  // 완전히 끝까지 기다리면 너무 오래 막히므로, 눈으로 봤을 때 충분히 열린 시점부터 통과 허용.
+  return isDoorOpen(tx, ty) && getDoorVisualOpenProgress(tx, ty) >= 0.86;
 }
 
 function saveProgress() {
@@ -646,6 +1099,7 @@ function loadSettings() {
     const savedSensitivity = Number(localStorage.getItem("mta_mouse_sensitivity"));
 
     if (savedControls) controls = { ...DEFAULT_CONTROLS, ...savedControls };
+    sanitizeControls();
     if (Number.isFinite(savedSensitivity) && savedSensitivity > 0) {
       mouseSensitivity = clamp(savedSensitivity, 0.5, 2);
     }
@@ -654,6 +1108,7 @@ function loadSettings() {
     mouseSensitivity = 1;
   }
 
+  sanitizeControls();
   updateSettingsUI();
 }
 
@@ -690,6 +1145,7 @@ function updateSettingsUI() {
 }
 
 function openSettings() {
+  SFX.menuOpen();
   settingsOpen = true;
   mapOpen = false;
   showCraft = false;
@@ -782,6 +1238,14 @@ function closeTestPanel() {
   if (gameStarted && !settingsOpen) requestGamePointerLock();
 }
 
+function isTestPanelActuallyOpen() {
+  return testOpen && testPanel && !testPanel.classList.contains("hidden");
+}
+
+function isInputBlockedByPanel() {
+  return settingsOpen || isTestPanelActuallyOpen();
+}
+
 function readTestNumber(input, min, max) {
   return Math.round(clamp(Number(input.value) || 0, min, max));
 }
@@ -820,7 +1284,7 @@ function applyTestValues(showToast = true) {
   if (showToast) showMessage("테스트 값 적용");
 }
 
-function queueTestApply(message) {
+function queueTestApply(message, closeAfterApply = false) {
   if (testApplyInProgress) return;
   testApplyInProgress = true;
   applyTestBtn.disabled = true;
@@ -829,6 +1293,7 @@ function queueTestApply(message) {
   requestAnimationFrame(() => {
     try {
       applyTestValues(false);
+      if (closeAfterApply) closeTestPanel();
       if (message) showMessage(message);
     } catch (error) {
       console.error(error);
@@ -882,6 +1347,7 @@ function showMessage(text) {
 function hideMessage() {
   messageTimer = 0;
   messageBox.classList.remove("show");
+  messageBox.textContent = "";
 }
 
 function updateMessage() {
@@ -889,7 +1355,7 @@ function updateMessage() {
     messageTimer--;
 
     if (messageTimer <= 0) {
-      messageBox.classList.remove("show");
+      hideMessage();
     }
   }
 }
@@ -905,11 +1371,27 @@ function getDoorStatesForDay() {
 }
 
 function isDoorOpen(tx, ty) {
-  return getDoorStatesForDay()[getResourceKey(tx, ty)] === true;
+  const gate = getTutorialGateCenter(tx, ty);
+  const key = gate ? gate.key : getResourceKey(tx, ty);
+  return getDoorStatesForDay()[key] === true;
 }
 
 function setDoorOpen(tx, ty, open) {
   const doors = getDoorStatesForDay();
+  const gate = getTutorialGateCenter(tx, ty);
+
+  if (gate) {
+    for (let gx = gate.x - 1; gx <= gate.x + 1; gx++) {
+      const key = getResourceKey(gx, gate.y);
+      if (open) doors[key] = true;
+      else delete doors[key];
+    }
+
+    if (open) doors[gate.key] = true;
+    else delete doors[gate.key];
+    return;
+  }
+
   const key = getResourceKey(tx, ty);
 
   if (open) doors[key] = true;
@@ -921,7 +1403,7 @@ function isSolidTile(tx, ty) {
 
   const tile = level[ty][tx];
 
-  return tile === TILE.WALL || (tile === TILE.MAZE_DOOR && !isDoorOpen(tx, ty));
+  return tile === TILE.WALL || (tile === TILE.MAZE_DOOR && !isDoorFullyOpen(tx, ty));
 }
 
 function isWalkable(tx, ty) {
@@ -954,7 +1436,7 @@ function canOccupyPosition(px, py) {
 }
 
 function wouldDoorBlockPlayer(tx, ty) {
-  return circleOverlapsTile(x, y, tx, ty, CONFIG.playerRadius + 0.06);
+  return circleOverlapsTile(x, y, tx, ty, CONFIG.playerRadius + 0.08);
 }
 
 function getLightRatio() {
@@ -995,6 +1477,11 @@ function isInsideCentralBase(tx, ty) {
 }
 
 function updateSceneFromPosition() {
+  if (tutorialMode) {
+    scene = "tutorial";
+    return;
+  }
+
   const nextScene = isInsideCentralBase(Math.floor(x), Math.floor(y)) ? "base" : "maze";
   scene = nextScene;
 }
@@ -1095,6 +1582,7 @@ function revealCentralBaseOnMap() {
 }
 
 function revealAroundPlayer() {
+  if (tutorialMode) return false;
   if (!crafted.map) return false;
 
   if (scene === "base") {
@@ -1137,6 +1625,141 @@ function getTileAhead() {
 
   return last;
 }
+
+function generateTutorialRoom() {
+  tutorialMode = true;
+  tutorialFall = null;
+  tutorialTitle = "";
+  tutorialTitleTimer = 0;
+  tutorialDoorKey = "";
+  tutorialExitDoorKey = "";
+  mapOpen = false;
+  showCraft = false;
+  inventoryOpen = false;
+  gathering = null;
+  screenFade = 0;
+
+  mapW = 19;
+  mapH = 96;
+  centralBaseBounds = null;
+  level = Array.from({ length: mapH }, () => Array(mapW).fill(TILE.WALL));
+
+  // 시작 튜토리얼 방.
+  for (let yy = 86; yy <= 94; yy++) {
+    for (let xx = 2; xx <= 16; xx++) {
+      const border = xx === 2 || xx === 16 || yy === 86 || yy === 94;
+      level[yy][xx] = border ? TILE.WALL : TILE.EMPTY;
+    }
+  }
+
+  // 첫 번째 철제 양문 대문.
+  for (let xx = 8; xx <= 10; xx++) level[86][xx] = TILE.MAZE_DOOR;
+  tutorialDoorKey = getResourceKey(9, 86);
+
+  // 앞이 무한히 이어지는 것처럼 보이도록 아주 긴 복도.
+  for (let yy = 5; yy <= 85; yy++) {
+    for (let xx = 7; xx <= 11; xx++) {
+      level[yy][xx] = TILE.EMPTY;
+    }
+  }
+
+  // 실제 끝은 멀리 막아두고, 그 전에 검은 전환 연출을 시작한다.
+  for (let xx = 7; xx <= 11; xx++) level[4][xx] = TILE.WALL;
+
+  x = 9.5;
+  y = 91.4;
+  dir = -90;
+  pitch = -4;
+  scene = "tutorial";
+
+  lightMax = getLightMax();
+  lightPower = lightMax;
+  sanityMax = typeof getSanityMax === "function" ? getSanityMax() : 100;
+  sanity = sanityMax;
+  staminaMax = getStaminaMax();
+  stamina = staminaMax;
+
+  rebuildWorld();
+  screenFade = 1;
+  screenFadeTarget = 0;
+  screenFadeSpeed = 0.022;
+  updateRenderSettings(true);
+  syncCamera();
+  hideMessage();
+  showTutorialTitle("문을 열고 앞으로 나아가세요", 150);
+}
+
+function finishTutorialToMainRoom() {
+  tutorialMode = false;
+  tutorialFall = null;
+  setTutorialDone(true);
+  screenFade = 0;
+  generateMaze();
+
+  if (centralBaseBounds) {
+    const centerX = Math.floor((centralBaseBounds.startX + centralBaseBounds.endX) / 2);
+    const centerY = Math.floor((centralBaseBounds.startY + centralBaseBounds.endY) / 2);
+    x = centerX + 0.5;
+    y = centerY + 0.5;
+    dir = -90;
+    pitch = 0;
+    scene = "base";
+  }
+
+  lightMax = getLightMax();
+  lightPower = Math.max(lightPower, Math.min(lightMax, 100));
+  sanityMax = typeof getSanityMax === "function" ? getSanityMax() : 100;
+  sanity = sanityMax;
+  staminaMax = getStaminaMax();
+  stamina = staminaMax;
+
+  updateRenderSettings(true);
+  syncCamera();
+  SFX.sceneTransition();
+  screenFade = 1;
+  screenFadeTarget = 0;
+  screenFadeSpeed = 0.018;
+  showTutorialTitle("YOU AWAKENED", 100);
+}
+
+function checkTutorialPit() {
+  if (!tutorialMode || tutorialFall) return;
+  if (!tutorialDoorKey) return;
+
+  const [doorX, doorY] = tutorialDoorKey.split(",").map(Number);
+  if (!Number.isFinite(doorX) || !Number.isFinite(doorY)) return;
+
+  // 첫 문을 지나 약 5초 정도 앞으로 이동하면 서서히 검게 잠기는 연출을 시작한다.
+  if (isDoorFullyOpen(doorX, doorY) && y <= 75.0) {
+    tutorialFall = {
+      fadeStartY: 75.0,
+      blackoutY: 60.0
+    };
+  }
+}
+
+function checkTutorialExitDoor() {
+  // 긴 검은 복도 연출로 전환되었으므로 두 번째 문 출구는 사용하지 않는다.
+}
+
+function updateTutorialFall() {
+  if (!tutorialFall) return false;
+
+  const fade = clamp((tutorialFall.fadeStartY - y) / (tutorialFall.fadeStartY - tutorialFall.blackoutY), 0, 1);
+  screenFade = Math.max(screenFade, fade);
+  screenFadeTarget = screenFade;
+
+  if (y <= tutorialFall.blackoutY) {
+    tutorialFall = null;
+    screenFade = 1;
+    screenFadeTarget = 1;
+    finishTutorialToMainRoom();
+    return true;
+  }
+
+  return false;
+}
+
 
 function generateMaze() {
   const cells = CONFIG.mazeCells;
@@ -1375,6 +1998,10 @@ function changeMazeDay() {
   gathering = null;
   saveProgress();
 
+  screenFade = 1;
+  screenFadeTarget = 0;
+  screenFadeSpeed = 0.028;
+
   generateMaze();
   showMessage(`DAY ${day} - 미로가 변경되었습니다.`);
 }
@@ -1406,6 +2033,7 @@ function startGathering(target) {
     name: RESOURCE_NAMES[resource]
   };
 
+  SFX.gatherStart(resource);
   hideMessage();
   return true;
 }
@@ -1450,8 +2078,12 @@ function updateGathering() {
   stamina = Math.max(0, stamina - staminaPerFrame);
   gathering.progress++;
 
+  // 채집 틱 사운드 (주기적)
+  if (gathering.progress % 18 === 0) SFX.gatherTick(gathering.resource);
+
   if (gathering.progress < gathering.duration) return;
 
+  SFX.gatherDone(gathering.resource);
   inventory[gathering.resource]++;
   markResourceCollected(gathering.tx, gathering.ty);
   level[gathering.ty][gathering.tx] = TILE.EMPTY;
@@ -1461,20 +2093,30 @@ function updateGathering() {
 }
 
 function interact() {
+  if (tutorialFall) return;
+
   const target = getTileAhead();
 
   if (target.tile === TILE.MAZE_DOOR) {
-    const open = isDoorOpen(target.tx, target.ty);
+    const gate = getTutorialGateCenter(target.tx, target.ty);
+    const doorX = gate ? gate.x : target.tx;
+    const doorY = gate ? gate.y : target.ty;
+    const open = isDoorOpen(doorX, doorY);
 
-    if (open && wouldDoorBlockPlayer(target.tx, target.ty)) {
-      showMessage("문 사이에서 조금 벗어난 뒤 닫을 수 있습니다.");
+    if (open && wouldDoorBlockPlayer(doorX, doorY)) {
       return;
     }
 
-    setDoorOpen(target.tx, target.ty, !open);
-    setDoorVisualTarget(target.tx, target.ty);
+    setDoorOpen(doorX, doorY, !open);
+    setDoorVisualTarget(doorX, doorY);
     saveProgress();
-    showMessage(open ? "문을 닫았습니다." : "문을 열었습니다.");
+
+    if (!open) SFX.doorOpen(); else SFX.doorClose();
+
+    if (!open && isTutorialAnyGate(doorX, doorY)) {
+      showTutorialTitle("DOOR OPENED", 210);
+    }
+
     return;
   }
 
@@ -1485,12 +2127,6 @@ function interact() {
     }
 
     showCraft = !showCraft;
-    showMessage(showCraft ? "제작대를 열었습니다." : "제작창을 닫았습니다.");
-    return;
-  }
-
-  if (target.tile === TILE.STORAGE) {
-    showMessage("보관함은 이번 튜토리얼 구조에서 사용하지 않습니다.");
     return;
   }
 
@@ -1503,8 +2139,6 @@ function interact() {
     startGathering(target);
     return;
   }
-
-  showMessage("상호작용할 대상이 없습니다.");
 }
 
 function canOpenCraftPanel() {
@@ -1585,6 +2219,10 @@ function getLightDecayPerFrame() {
   const lightDecayPerSecond = [10, 8, 5];
   const perSecond = lightDecayPerSecond[getLanternLevel()] || lightDecayPerSecond[lightDecayPerSecond.length - 1];
   return perSecond / 60;
+}
+
+function getSanityMax() {
+  return 100;
 }
 
 function getStaminaMax() {
@@ -1721,17 +2359,20 @@ function canCraft(item) {
 
 function craft(item) {
   if (!isCraftUnlocked(item)) {
+    SFX.craftFail();
     showMessage("아직 테크트리 조건을 만족하지 못했습니다.");
     return;
   }
 
   if (!canCraft(item)) {
+    SFX.craftFail();
     showMessage("재료가 부족하거나 현재 제작 단계에서 만들 수 없습니다.");
     return;
   }
 
   const cost = getCostForCraftItem(item);
   spendMaterials(cost);
+  SFX.craftDone();
 
   if (item === "craftTech") {
     crafted.craftTech = getCraftTechLevel() + 1;
@@ -1873,17 +2514,17 @@ function updateMovement() {
   let ix = 0;
   let iy = 0;
 
-  if (keys[controls.forward]) { ix += fx; iy += fy; }
-  if (keys[controls.back]) { ix -= fx; iy -= fy; }
-  if (keys[controls.left]) { ix -= rx; iy -= ry; }
-  if (keys[controls.right]) { ix += rx; iy += ry; }
+  if (isControlDown("forward")) { ix += fx; iy += fy; }
+  if (isControlDown("back")) { ix -= fx; iy -= fy; }
+  if (isControlDown("left")) { ix -= rx; iy -= ry; }
+  if (isControlDown("right")) { ix += rx; iy += ry; }
 
   const moving = ix !== 0 || iy !== 0;
 
   staminaMax = getStaminaMax();
   stamina = clamp(stamina, 0, staminaMax);
 
-  const wantsToRun = keys[controls.run] && moving;
+  const wantsToRun = isControlDown("run") && moving;
 
   // 기력이 0이 되면 약 0.5초 동안 완전히 멈춘 뒤 회복이 시작된다.
   // 회복이 한 번 시작되면 걷거나 Shift를 누르고 있어도 중간에 멈추지 않고 계속 찬다.
@@ -1891,7 +2532,7 @@ function updateMovement() {
     sprintActive = false;
 
     if (!staminaRecoveryStarted) {
-      if (moving || keys[controls.run]) {
+      if (moving || isControlDown("run")) {
         staminaRecoverWait = 0;
       } else {
         staminaRecoverWait++;
@@ -1950,7 +2591,7 @@ function updateMovement() {
 
 
 function updateSurvivalSystems() {
-  if (!gameStarted || gameOver) return;
+  if (!gameStarted || gameOver || tutorialMode) return;
 
   const inMaze = scene !== "base";
   const lanternLevel = getLanternLevel();
@@ -2000,36 +2641,22 @@ function triggerGameOver() {
   mapOpen = false;
   gathering = null;
   for (const code of Object.keys(keys)) keys[code] = false;
+
+  screenFadeTarget = 1;
+  screenFadeSpeed = 0.012;
+  SFX.sanityLow();
+
   showMessage("정신력이 바닥났습니다. 게임이 초기화됩니다.");
 
   setTimeout(() => {
     resetGameProgress();
     gameStarted = true;
     gameOver = false;
+    screenFade = 1;
+    screenFadeTarget = 0;
+    screenFadeSpeed = 0.018;
     showMessage("중앙 방에서 다시 시작합니다.");
   }, 900);
-}
-
-function update() {
-  if (!gameStarted || settingsOpen || testOpen || gameOver) return;
-
-  if (!mapOpen && !gathering) {
-    const lookScale = mouseSensitivity * CONFIG.rotSpeed * 180 / Math.PI;
-    dir += mouse.dx * lookScale;
-    pitch = clamp(pitch - mouse.dy * lookScale, -72, 72);
-  }
-
-  mouse.dx = 0;
-  mouse.dy = 0;
-
-  if (gathering) updateGathering();
-  else updateMovement();
-
-  updateDoorAnimations();
-  updateSceneFromPosition();
-  updateSurvivalSystems();
-  if (revealAroundPlayer()) saveProgress();
-  updateMessage();
 }
 
 function clearWorld() {
@@ -2139,31 +2766,204 @@ function setDoorVisualTarget(tx, ty) {
   const visual = doorVisuals.get(getResourceKey(tx, ty));
   if (!visual) return;
 
+  if (visual.rightPanel) {
+    const open = isDoorOpen(tx, ty);
+    visual.targetRotation = open ? DOOR_OPEN_ANGLE : 0;
+    visual.rightTargetRotation = open ? -DOOR_OPEN_ANGLE : 0;
+    return;
+  }
+
   visual.targetRotation = getDoorTargetRotation(tx, ty);
 }
 
 function updateDoorAnimations() {
   for (const visual of doorVisuals.values()) {
+    const speed = visual.rightPanel ? 0.0065 : DOOR_ANIMATION_SPEED;
+
     const current = visual.panel.rotation.y;
     const diff = visual.targetRotation - current;
 
-    if (Math.abs(diff) < 0.001) {
+    if (Math.abs(diff) < 0.0006) {
       visual.panel.rotation.y = visual.targetRotation;
-      continue;
+    } else {
+      visual.panel.rotation.y += diff * speed;
     }
 
-    visual.panel.rotation.y += diff * DOOR_ANIMATION_SPEED;
+    if (visual.rightPanel) {
+      const rightCurrent = visual.rightPanel.rotation.y;
+      const rightDiff = visual.rightTargetRotation - rightCurrent;
+
+      if (Math.abs(rightDiff) < 0.0006) {
+        visual.rightPanel.rotation.y = visual.rightTargetRotation;
+      } else {
+        visual.rightPanel.rotation.y += rightDiff * speed;
+      }
+    }
   }
 }
 
 function addDetailedDoors(tiles) {
   for (const tile of tiles) {
+    const gate = getTutorialGateCenter(tile.x, tile.y);
+    if (gate && getResourceKey(tile.x, tile.y) !== gate.key) {
+      // 넓은 대문의 좌우 보조 타일은 충돌용으로만 쓰고 모델은 중앙에 하나만 배치한다.
+      continue;
+    }
+
     const group = new THREE.Group();
     const key = getResourceKey(tile.x, tile.y);
     const targetRotation = getDoorTargetRotation(tile.x, tile.y);
+    const isGate = isTutorialAnyGate(tile.x, tile.y);
 
     group.position.set(tile.x + 0.5, 0, tile.y + 0.5);
     group.rotation.y = getDoorRotationY(tile.x, tile.y);
+
+    if (isGate) {
+      // 사용자가 그린 느낌처럼 벽 안에 자연스럽게 들어가는 아치형 문틀로 수정한다.
+      const ironPanelMat = new THREE.MeshStandardMaterial({
+        color: 0x16181a,
+        roughness: 0.56,
+        metalness: 0.9,
+        side: THREE.DoubleSide
+      });
+      const ironRibMat = new THREE.MeshStandardMaterial({
+        color: 0x363738,
+        roughness: 0.34,
+        metalness: 0.94,
+        side: THREE.DoubleSide
+      });
+      const archFrameMat = materials.wall;
+      const archOutlineMat = materials.wallTrim;
+
+      const createArchFrameGeometry = (outerWidth, outerHeight, innerWidth, innerSideHeight, innerArchHeight, depth) => {
+        const outerHalf = outerWidth / 2;
+        const innerHalf = innerWidth / 2;
+        const outer = new THREE.Shape();
+        outer.moveTo(-outerHalf, 0);
+        outer.lineTo(outerHalf, 0);
+        outer.lineTo(outerHalf, outerHeight);
+        outer.lineTo(-outerHalf, outerHeight);
+        outer.lineTo(-outerHalf, 0);
+
+        const hole = new THREE.Path();
+        hole.moveTo(-innerHalf, 0.06);
+        hole.lineTo(innerHalf, 0.06);
+        hole.lineTo(innerHalf, innerSideHeight);
+        hole.quadraticCurveTo(innerHalf, innerArchHeight - 0.02, 0, innerArchHeight);
+        hole.quadraticCurveTo(-innerHalf, innerArchHeight - 0.02, -innerHalf, innerSideHeight);
+        hole.lineTo(-innerHalf, 0.06);
+        outer.holes.push(hole);
+
+        const geometry = new THREE.ExtrudeGeometry(outer, {
+          depth,
+          bevelEnabled: false
+        });
+        geometry.translate(0, 0, -depth / 2);
+        return geometry;
+      };
+
+      const archFacade = new THREE.Mesh(
+        createArchFrameGeometry(3.10, 2.48, 2.28, 1.70, 2.20, 0.16),
+        archFrameMat
+      );
+      archFacade.position.set(0, 0, 0.015);
+      group.add(archFacade);
+
+      const archOutline = new THREE.Mesh(
+        createArchFrameGeometry(2.72, 2.28, 2.38, 1.76, 2.24, 0.06),
+        archOutlineMat
+      );
+      archOutline.position.set(0, 0.02, 0.10);
+      group.add(archOutline);
+
+      addDoorBox(group, 2.70, 0.08, 0.16, archOutlineMat, 0, 0.04, 0.08);
+
+      const leftPanel = new THREE.Group();
+      const rightPanel = new THREE.Group();
+
+      // 문짝이 프레임 앞뒤가 뒤집혀 보이지 않도록 중심선에 맞춘다.
+      // 철제 네모 양문이 중앙에서 자연스럽게 맞물리도록 문짝 기준점을 유지한다.
+      leftPanel.position.set(-1.14, 0, 0.01);
+      rightPanel.position.set(1.14, 0, 0.01);
+
+      const open = isDoorOpen(tile.x, tile.y);
+      leftPanel.rotation.y = open ? DOOR_OPEN_ANGLE : 0;
+      rightPanel.rotation.y = open ? -DOOR_OPEN_ANGLE : 0;
+
+      group.add(leftPanel);
+      group.add(rightPanel);
+
+      const createIronDoorLeaf = () => {
+        const leafGroup = new THREE.Group();
+        const width = 1.13;
+        const height = 2.16;
+        const depth = 0.16;
+
+        // 문은 곡선 없이 단순한 철제 네모 반문 하나를 만들고, 반대편은 좌우 반전해서 사용한다.
+        // 이번에는 두 문짝이 문틀 안을 거의 가득 채우도록 크기를 키운다.
+
+        const leaf = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), ironPanelMat);
+        leaf.position.set(width / 2, height / 2 + 0.04, 0);
+        leafGroup.add(leaf);
+
+        const center = width / 2;
+        addDoorBox(leafGroup, 0.09, 1.98, 0.18, ironRibMat, 0.055, 1.08, 0);
+        addDoorBox(leafGroup, 0.09, 1.98, 0.18, ironRibMat, width - 0.055, 1.08, 0);
+        addDoorBox(leafGroup, width - 0.10, 0.10, 0.18, ironRibMat, center, 0.16, 0);
+        addDoorBox(leafGroup, width - 0.10, 0.10, 0.18, ironRibMat, center, 1.08, 0);
+        addDoorBox(leafGroup, width - 0.10, 0.10, 0.18, ironRibMat, center, 2.00, 0);
+
+        for (const px of [0.24, center, width - 0.24]) {
+          addDoorBox(leafGroup, 0.055, 1.82, 0.18, ironRibMat, px, 1.08, 0);
+        }
+
+        const diagA = new THREE.Mesh(new THREE.BoxGeometry(0.10, 1.02, 0.18), ironRibMat);
+        diagA.position.set(center, 1.56, 0);
+        diagA.rotation.z = 0.82;
+        leafGroup.add(diagA);
+
+        const diagB = new THREE.Mesh(new THREE.BoxGeometry(0.10, 1.02, 0.18), ironRibMat);
+        diagB.position.set(center, 0.60, 0);
+        diagB.rotation.z = -0.82;
+        leafGroup.add(diagB);
+
+        addDoorBox(leafGroup, 0.10, 0.34, 0.18, ironRibMat, width - 0.22, 1.10, 0.03);
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.085, 0.012, 8, 20), ironRibMat);
+        ring.position.set(width - 0.32, 1.08, 0.11);
+        ring.rotation.y = Math.PI / 2;
+        leafGroup.add(ring);
+
+        for (const px of [0.16, 0.45, 0.74, 1.03]) {
+          for (const py of [0.34, 0.92, 1.50, 2.08]) {
+            const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.028, 8, 8), ironRibMat);
+            rivet.position.set(px, py, 0.10);
+            rivet.scale.set(1, 1, 0.40);
+            leafGroup.add(rivet);
+          }
+        }
+
+        return leafGroup;
+      };
+
+      const baseDoorLeaf = createIronDoorLeaf();
+      leftPanel.add(baseDoorLeaf);
+
+      const mirroredDoorLeaf = baseDoorLeaf.clone(true);
+      mirroredDoorLeaf.scale.x = -1;
+      rightPanel.add(mirroredDoorLeaf);
+
+      doorVisuals.set(key, {
+        panel: leftPanel,
+        rightPanel,
+        tx: tile.x,
+        ty: tile.y,
+        targetRotation: open ? DOOR_OPEN_ANGLE : 0,
+        rightTargetRotation: open ? -DOOR_OPEN_ANGLE : 0
+      });
+
+      worldRoot.add(group);
+      continue;
+    }
 
     addDoorBox(group, 0.13, 2.18, 0.24, materials.doorFrame, -0.515, 1.09, 0);
     addDoorBox(group, 0.13, 2.18, 0.24, materials.doorFrame, 0.515, 1.09, 0);
@@ -2368,6 +3168,28 @@ function addResourceModels(tiles, type) {
   }
 }
 
+function addPitModels(tiles) {
+  for (const tile of tiles) {
+    const group = new THREE.Group();
+    group.position.set(tile.x + 0.5, 0.012, tile.y + 0.5);
+
+    const hole = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.56, 0.035, 32), materials.pit);
+    hole.rotation.x = Math.PI / 2;
+    group.add(hole);
+
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(0.5, 0.035, 8, 32),
+      materials.doorMetal
+    );
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = 0.018;
+    group.add(rim);
+
+    worldRoot.add(group);
+  }
+}
+
+
 function rebuildWorld() {
   clearWorld();
 
@@ -2410,7 +3232,8 @@ function rebuildWorld() {
     coal: [],
     workbench: [],
     storage: [],
-    exit: []
+    exit: [],
+    pit: []
   };
 
   for (let yy = 0; yy < mapH; yy++) {
@@ -2427,6 +3250,7 @@ function rebuildWorld() {
       else if (tile === TILE.WORKBENCH) tiles.workbench.push(pos);
       else if (tile === TILE.STORAGE) tiles.storage.push(pos);
       else if (tile === TILE.EXIT) tiles.exit.push(pos);
+      else if (tile === TILE.PIT) tiles.pit.push(pos);
     }
   }
 
@@ -2441,6 +3265,7 @@ function rebuildWorld() {
   addInstancedTiles(tiles.workbench, new THREE.BoxGeometry(0.86, 0.52, 0.62), materials.workbench, 0.26);
   addInstancedTiles(tiles.storage, new THREE.BoxGeometry(0.78, 0.78, 0.78), materials.storage, 0.39);
   addInstancedTiles(tiles.exit, new THREE.BoxGeometry(0.7, 1.55, 0.08), materials.exit, 0.78);
+  addPitModels(tiles.pit);
 }
 
 function syncCamera() {
@@ -2455,9 +3280,11 @@ function syncCamera() {
 }
 
 function updateRenderSettings(force = false) {
-  const lightRatio = getLightRatio();
+  const lightRatio = tutorialMode ? 1 : getLightRatio();
   const nextFov = getCurrentFov();
-  const baseFar = scene === "base" ? 26 : getCurrentRayDepth() + 4;
+  const inTutorial = scene === "tutorial";
+  const safeRoom = scene === "base" || inTutorial;
+  const baseFar = inTutorial ? 96 : (safeRoom ? 30 : getCurrentRayDepth() + 4);
   const nextFar = Math.max(baseFar, 12 + lightRatio * 26);
 
   if (force || Math.abs(camera.fov - nextFov) > 0.01 || Math.abs(camera.far - nextFar) > 0.01) {
@@ -2466,51 +3293,172 @@ function updateRenderSettings(force = false) {
     camera.updateProjectionMatrix();
   }
 
-  const fogDensity = scene === "base" ? 0.022 : 0.13 - lightRatio * 0.095;
-  scene3d.fog.density = clamp(fogDensity, 0.028, 0.13);
+  const fogDensity = inTutorial ? 0.038 : (safeRoom ? 0.016 : 0.13 - lightRatio * 0.095);
+  scene3d.fog.density = clamp(fogDensity, 0.016, 0.13);
 
-  eyeLight.intensity = 0.55 + lightRatio * 2.45;
-  eyeLight.distance = 5 + lightRatio * 21;
-  ambientLight.intensity = scene === "base" ? 0.76 : 0.25 + lightRatio * 0.36;
-  hemiLight.intensity = scene === "base" ? 0.45 : 0.18 + lightRatio * 0.22;
+  eyeLight.intensity = inTutorial ? 2.9 : (safeRoom ? 3.2 : 0.55 + lightRatio * 2.45);
+  eyeLight.distance = inTutorial ? 40 : (safeRoom ? 28 : 5 + lightRatio * 21);
+  ambientLight.intensity = inTutorial ? 0.76 : (safeRoom ? 0.86 : 0.25 + lightRatio * 0.36);
+}
+
+function drawTutorialTitle(w, h) {
+  if (!tutorialTitle || tutorialTitleTimer <= 0) return;
+
+  const fadeInFrames = 24;
+  const fadeOutFrames = 38;
+  const remaining = tutorialTitleTimer;
+  let alpha;
+  if (remaining > fadeOutFrames) {
+    alpha = 1;
+  } else {
+    alpha = remaining / fadeOutFrames;
+  }
+  // 처음 fadeInFrames는 외부에서 최대값 150으로 세팅되므로 별도 처리
+  alpha = clamp(alpha, 0, 1);
+
+  const cy = h * 0.43;
+  const lineW = Math.min(480, w * 0.38);
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.textAlign = "center";
+
+  // 배경 반투명 패치
+  ctx.fillStyle = "rgba(0,0,0,0.28)";
+  roundedRectPath(w / 2 - 210, cy - 50, 420, 62, 4);
+  ctx.fill();
+
+  // 장식선
+  const drawLine = (x1, x2, y, reverse) => {
+    const g = ctx.createLinearGradient(x1, y, x2, y);
+    if (reverse) { g.addColorStop(0, "rgba(220,185,110,0.5)"); g.addColorStop(1, "rgba(200,165,90,0)"); }
+    else         { g.addColorStop(0, "rgba(200,165,90,0)");    g.addColorStop(1, "rgba(220,185,110,0.5)"); }
+    ctx.strokeStyle = g;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x1, y);
+    ctx.lineTo(x2, y);
+    ctx.stroke();
+  };
+  drawLine(w / 2 - lineW, w / 2 - 16, cy - 30, false);
+  drawLine(w / 2 + 16, w / 2 + lineW, cy - 30, true);
+
+  // 중앙 다이아몬드
+  ctx.fillStyle = "rgba(220,190,120,0.75)";
+  ctx.beginPath();
+  ctx.moveTo(w / 2, cy - 35);
+  ctx.lineTo(w / 2 + 5, cy - 30);
+  ctx.lineTo(w / 2, cy - 25);
+  ctx.lineTo(w / 2 - 5, cy - 30);
+  ctx.closePath();
+  ctx.fill();
+
+  // 텍스트
+  ctx.shadowColor = "rgba(0,0,0,0.92)";
+  ctx.shadowBlur = 22;
+  ctx.fillStyle = "rgba(238,222,185,0.97)";
+  ctx.font = "bold 34px Georgia, serif";
+  ctx.fillText(tutorialTitle, w / 2, cy);
+
+  ctx.restore();
+}
+
+function drawTutorialFade(w, h) {
+  // 튜토리얼 전용 페이드는 drawScreenFade로 통합되었으므로 비워둠
+}
+
+// 범용 화면 페이드 (씬 전환, 게임 시작 등)
+function drawScreenFade(w, h) {
+  if (screenFade <= 0.001) return;
+  ctx.save();
+  ctx.globalAlpha = clamp(screenFade, 0, 1);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
 }
 
 function draw() {
   const w = window.innerWidth;
   const h = window.innerHeight;
 
-  syncCamera();
-  updateRenderSettings();
-  renderer.render(scene3d, camera);
+  try {
+    syncCamera();
+    updateRenderSettings(true);
+
+    // 화면 흔들림: 카메라 오프셋 적용
+    if (screenShake.timer > 0) {
+      camera.position.x += screenShake.x * 0.018;
+      camera.position.y += screenShake.y * 0.012;
+    }
+
+    renderer.render(scene3d, camera);
+  } catch (error) {
+    console.error("render error", error);
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#e7d6ad";
+    ctx.font = "18px Arial";
+    ctx.fillText("렌더 오류: " + (error.message || error), 24, 48);
+    return;
+  }
 
   ctx.clearRect(0, 0, w, h);
 
-  drawVisionMask(w, h);
+  // HUD 흔들림: canvas translate
+  if (screenShake.timer > 0) {
+    ctx.save();
+    ctx.translate(screenShake.x, screenShake.y);
+  }
 
-  if (!gameStarted) return;
+  try {
+    drawVisionMask(w, h);
 
-  drawHUD(w, h);
-  drawGatheringOverlay(w, h);
-  if (getUpgradeLevel("marker") >= 2 && !mapOpen) drawMiniMap(w, h);
+    if (!gameStarted) {
+      if (screenShake.timer > 0) ctx.restore();
+      return;
+    }
 
-  if (mapOpen) drawFullMap(w, h);
-  if (inventoryOpen) drawInventoryPanel(w, h);
-  if (showCraft) drawCraftPanel(w, h);
+    drawHUD(w, h);
+    drawGatheringOverlay(w, h);
+    if (getUpgradeLevel("marker") >= 2 && !mapOpen && !tutorialMode) drawMiniMap(w, h);
+
+    if (mapOpen) drawFullMap(w, h);
+    if (inventoryOpen) drawInventoryPanel(w, h);
+    if (showCraft) drawCraftPanel(w, h);
+
+    drawTutorialTitle(w, h);
+    drawTutorialFade(w, h);
+    drawScreenFade(w, h);
+  } catch (error) {
+    console.error("HUD error", error);
+    ctx.fillStyle = "rgba(0,0,0,0.62)";
+    ctx.fillRect(20, 20, Math.min(760, w - 40), 64);
+    ctx.fillStyle = "#e7d6ad";
+    ctx.font = "16px Arial";
+    ctx.fillText("HUD 오류: " + (error.message || error), 34, 58);
+  }
+
+  if (screenShake.timer > 0) ctx.restore();
 }
 
 function drawVisionMask(w, h) {
+  if (tutorialMode) return;
+
   const lightRatio = getLightRatio();
+  const sanityRatio = clamp(sanity / sanityMax, 0, 1);
+
+  // 기본 어둠 비네팅
   const outer = Math.max(w, h) * (0.42 + lightRatio * 0.58);
   const inner = Math.max(w, h) * (0.07 + lightRatio * 0.21);
-  const edgeDarkness = 0.92 - lightRatio * 0.56;
-  const midDarkness = 0.46 - lightRatio * 0.36;
+  const edgeDarkness = 0.72 - lightRatio * 0.42;
+  const midDarkness = 0.30 - lightRatio * 0.24;
 
   ctx.save();
   ctx.translate(w / 2, h / 2);
   ctx.scale(1.65, 1);
 
   const gradient = ctx.createRadialGradient(0, 0, inner, 0, 0, outer);
-
   gradient.addColorStop(0, "rgba(0,0,0,0)");
   gradient.addColorStop(0.62, `rgba(0,0,0,${clamp(midDarkness, 0.03, 0.5)})`);
   gradient.addColorStop(1, `rgba(0,0,0,${clamp(edgeDarkness, 0.22, 0.94)})`);
@@ -2518,6 +3466,39 @@ function drawVisionMask(w, h) {
   ctx.fillStyle = gradient;
   ctx.fillRect(-w, -h, w * 2, h * 2);
   ctx.restore();
+
+  // 정신력 위험 시 붉은 맥동 테두리
+  if (sanityRatio < 0.35 && !tutorialMode) {
+    const dangerRatio = 1 - sanityRatio / 0.35;
+    const pulse = Math.sin(Date.now() / (180 + sanityRatio * 200)) * 0.5 + 0.5;
+    const alpha = dangerRatio * (0.18 + pulse * 0.22);
+
+    ctx.save();
+    ctx.translate(w / 2, h / 2);
+    ctx.scale(1.6, 1);
+
+    const edgeGrad = ctx.createRadialGradient(0, 0, Math.max(w, h) * 0.4, 0, 0, Math.max(w, h) * 0.75);
+    edgeGrad.addColorStop(0, "rgba(120,0,0,0)");
+    edgeGrad.addColorStop(0.7, `rgba(160,20,20,${alpha * 0.5})`);
+    edgeGrad.addColorStop(1, `rgba(200,30,10,${alpha})`);
+    ctx.fillStyle = edgeGrad;
+    ctx.fillRect(-w, -h, w * 2, h * 2);
+    ctx.restore();
+  }
+
+  // 빛 없을 때 중앙 압박 효과
+  if (lightPower <= 0 && torchPower <= 0 && !tutorialMode) {
+    const darkPulse = Math.sin(Date.now() / 900) * 0.5 + 0.5;
+    ctx.save();
+    ctx.translate(w / 2, h / 2);
+    const darkGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(w, h) * 0.6);
+    darkGrad.addColorStop(0, "rgba(0,0,0,0)");
+    darkGrad.addColorStop(0.5, `rgba(0,0,0,${0.25 + darkPulse * 0.15})`);
+    darkGrad.addColorStop(1, "rgba(0,0,0,0.78)");
+    ctx.fillStyle = darkGrad;
+    ctx.fillRect(-w, -h, w * 2, h * 2);
+    ctx.restore();
+  }
 }
 
 function roundedRectPath(x0, y0, w0, h0, r) {
@@ -2547,40 +3528,43 @@ function drawPanel(x0, y0, w0, h0, r, fill, stroke) {
   }
 }
 
-function drawOrnatePanel(x0, y0, w0, h0, accent = "rgba(183,146,83,0.36)") {
+function drawOrnatePanel(x0, y0, w0, h0, accent = "rgba(184,147,83,0.26)") {
   ctx.save();
+
+  ctx.shadowColor = "rgba(0,0,0,0.34)";
+  ctx.shadowBlur = 12;
+
   const bg = ctx.createLinearGradient(x0, y0, x0, y0 + h0);
-  bg.addColorStop(0, "rgba(14,11,8,0.90)");
-  bg.addColorStop(0.52, "rgba(9,8,7,0.86)");
-  bg.addColorStop(1, "rgba(4,4,4,0.86)");
-  drawPanel(x0, y0, w0, h0, 1, bg, accent);
+  bg.addColorStop(0, "rgba(22,18,13,0.82)");
+  bg.addColorStop(1, "rgba(7,6,5,0.82)");
+  drawPanel(x0, y0, w0, h0, 14, bg, accent);
 
-  ctx.strokeStyle = "rgba(0,0,0,0.52)";
-  ctx.strokeRect(x0 + 4.5, y0 + 4.5, w0 - 9, h0 - 9);
-  ctx.strokeStyle = "rgba(225,196,131,0.12)";
-  ctx.strokeRect(x0 + 10.5, y0 + 10.5, w0 - 21, h0 - 21);
-
-  const corner = 12;
-  const inner = 6;
-  ctx.strokeStyle = "rgba(214,182,117,0.42)";
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(255,235,185,0.07)";
   ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(x0 + inner, y0 + corner); ctx.lineTo(x0 + inner, y0 + inner); ctx.lineTo(x0 + corner, y0 + inner);
-  ctx.moveTo(x0 + w0 - corner, y0 + inner); ctx.lineTo(x0 + w0 - inner, y0 + inner); ctx.lineTo(x0 + w0 - inner, y0 + corner);
-  ctx.moveTo(x0 + inner, y0 + h0 - corner); ctx.lineTo(x0 + inner, y0 + h0 - inner); ctx.lineTo(x0 + corner, y0 + h0 - inner);
-  ctx.moveTo(x0 + w0 - corner, y0 + h0 - inner); ctx.lineTo(x0 + w0 - inner, y0 + h0 - inner); ctx.lineTo(x0 + w0 - inner, y0 + h0 - corner);
+  roundedRectPath(x0 + 6, y0 + 6, w0 - 12, h0 - 12, 10);
   ctx.stroke();
+
   ctx.restore();
 }
 
 function drawEldenDivider(x0, y0, w0) {
   ctx.save();
-  ctx.strokeStyle = "rgba(182,151,95,0.28)";
+  ctx.strokeStyle = "rgba(188,152,88,0.20)";
   ctx.beginPath();
-  ctx.moveTo(x0, y0); ctx.lineTo(x0 + w0, y0);
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x0 + w0, y0);
   ctx.stroke();
-  ctx.fillStyle = "rgba(210,175,108,0.46)";
-  ctx.fillRect(x0 + w0 / 2 - 20, y0 - 0.5, 40, 1);
+
+  const grad = ctx.createLinearGradient(x0, y0, x0 + w0, y0);
+  grad.addColorStop(0, "rgba(188,152,88,0)");
+  grad.addColorStop(0.5, "rgba(222,185,110,0.35)");
+  grad.addColorStop(1, "rgba(188,152,88,0)");
+  ctx.strokeStyle = grad;
+  ctx.beginPath();
+  ctx.moveTo(x0 + 26, y0 + 1);
+  ctx.lineTo(x0 + w0 - 26, y0 + 1);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -2594,42 +3578,46 @@ function drawResourcePill(label, value, x0, y0, w0, color) {
   ctx.fillText(`${label} ${value}`, x0 + 23, y0 + 16);
 }
 
-function drawStatusBar(x0, y0, label, value, max, width, fill) {
+function drawStatusBar(x0, y0, label, value, max, width, fill, flash = 0) {
   const ratio = clamp(value / Math.max(1, max), 0, 1);
-  const barH = 16;
-  const labelY = y0 - 12;
+  const barH = 13;
+  const labelY = y0 - 10;
 
   ctx.save();
-  ctx.font = "bold 15px Georgia, serif";
+  ctx.font = "bold 13px Georgia, serif";
   ctx.textAlign = "left";
-  ctx.fillStyle = "rgba(215,198,162,0.96)";
+  ctx.fillStyle = "rgba(226,209,173,0.95)";
   ctx.fillText(label, x0, labelY);
 
   ctx.textAlign = "right";
-  ctx.fillStyle = "rgba(182,164,131,0.86)";
-  ctx.font = "14px Georgia, serif";
+  ctx.font = "12px Georgia, serif";
+  ctx.fillStyle = "rgba(190,173,139,0.80)";
   ctx.fillText(`${Math.round(value)} / ${Math.round(max)}`, x0 + width, labelY);
 
-  ctx.fillStyle = "rgba(0,0,0,0.64)";
-  ctx.fillRect(x0 - 5, y0 - 4, width + 10, barH + 8);
+  // 플래시: 바 배경 강조
+  if (flash > 0.01) {
+    ctx.save();
+    ctx.globalAlpha = flash * 0.35;
+    ctx.fillStyle = "rgba(255,100,80,1)";
+    roundedRectPath(x0 - 3, y0 - 3, width + 6, barH + 6, 9);
+    ctx.fill();
+    ctx.restore();
+  }
 
-  const bg = ctx.createLinearGradient(x0, y0, x0, y0 + barH);
-  bg.addColorStop(0, "rgba(32,28,23,0.98)");
-  bg.addColorStop(1, "rgba(7,7,6,0.98)");
-  ctx.fillStyle = bg;
-  ctx.fillRect(x0, y0, width, barH);
-  ctx.strokeStyle = "rgba(176,141,86,0.34)";
-  ctx.strokeRect(x0 - 0.5, y0 - 0.5, width + 1, barH + 1);
+  drawPanel(x0 - 3, y0 - 3, width + 6, barH + 6, 9, "rgba(0,0,0,0.42)", null);
+  drawPanel(x0, y0, width, barH, 7, "rgba(255,255,255,0.08)", "rgba(255,255,255,0.07)");
 
   if (ratio > 0) {
-    const fillW = width * ratio;
+    const fillW = Math.max(0, width * ratio);
     const grad = ctx.createLinearGradient(x0, y0, x0, y0 + barH);
     grad.addColorStop(0, fill);
-    grad.addColorStop(1, "rgba(18,10,7,0.95)");
-    ctx.fillStyle = grad;
-    ctx.fillRect(x0, y0, fillW, barH);
-    ctx.fillStyle = "rgba(255,232,185,0.22)";
-    ctx.fillRect(x0 + 1, y0 + 1, Math.max(0, fillW - 2), 3);
+    grad.addColorStop(1, "rgba(28,18,10,0.96)");
+
+    drawPanel(x0 + 1, y0 + 1, Math.max(0, fillW - 2), barH - 2, 6, grad, null);
+
+    ctx.fillStyle = "rgba(255,245,210,0.18)";
+    roundedRectPath(x0 + 3, y0 + 3, Math.max(0, fillW - 6), 3, 2);
+    ctx.fill();
   }
 
   ctx.restore();
@@ -2637,78 +3625,157 @@ function drawStatusBar(x0, y0, label, value, max, width, fill) {
 
 function drawHUD(w, h) {
   const showTorchBar = getTorchLevel() > 0 || torchPower > 0;
-  const rowGap = 41;
-  const barW = 252;
+  const rowGap = 40;
+  const barW = 228;
   const barCount = showTorchBar ? 4 : 3;
-  const panelW = 320;
-  const panelH = 62 + barCount * rowGap + 12;
+  const panelW = 284;
+  const panelH = 54 + barCount * rowGap + 14;
   const x0 = 16;
   const y0 = Math.max(16, h - panelH - 16);
-  const barX = x0 + 22;
-  let barY = y0 + 60;
+  const barX = x0 + 24;
+  let barY = y0 + 54;
 
-  drawOrnatePanel(x0, y0, panelW, panelH, "rgba(184,147,83,0.30)");
+  // 정신력 위험 시 패널 테두리 색 변경
+  const sanityRatio = sanity / sanityMax;
+  const dangerColor = sanityRatio < 0.25
+    ? `rgba(180,60,60,${0.4 + Math.sin(Date.now() / 300) * 0.2})`
+    : "rgba(184,147,83,0.26)";
+
+  drawOrnatePanel(x0, y0, panelW, panelH, dangerColor);
 
   ctx.save();
-  ctx.fillStyle = "rgba(217,194,145,0.88)";
-  ctx.font = "bold 16px Georgia, serif";
+  ctx.fillStyle = "rgba(225,201,145,0.90)";
+  ctx.font = "bold 15px Georgia, serif";
   ctx.textAlign = "left";
-  ctx.fillText("상태", x0 + 18, y0 + 22);
-  drawEldenDivider(x0 + 16, y0 + 32, panelW - 32);
+  ctx.fillText("상태", x0 + 20, y0 + 22);
+  drawEldenDivider(x0 + 18, y0 + 32, panelW - 36);
   ctx.restore();
 
+  // 각 스탯 바 - 플래시 반영
   if (showTorchBar) {
-    drawStatusBar(barX, barY, "횃불", torchPower, Math.max(1, getTorchMax()), barW - 20, "rgba(201,92,42,0.96)");
+    const flash = statFlash.torch;
+    drawStatusBar(barX, barY, "횃불", torchPower, Math.max(1, getTorchMax()), barW,
+      flash > 0.01
+        ? `rgba(${Math.round(201 + flash * 54)},${Math.round(92 * (1 - flash * 0.5))},42,0.96)`
+        : "rgba(201,92,42,0.96)",
+      flash);
     barY += rowGap;
   }
-  drawStatusBar(barX, barY, "빛", lightPower, getLightMax(), barW - 20, "rgba(218,172,68,0.96)");
-  barY += rowGap;
-  drawStatusBar(barX, barY, "정신력", sanity, sanityMax, barW - 20, "rgba(96,124,163,0.94)");
-  barY += rowGap;
-  drawStatusBar(barX, barY, "기력", stamina, staminaMax, barW - 20, "rgba(126,170,92,0.94)");
 
+  const lightRatio = lightPower / getLightMax();
+  const lightFlash = statFlash.light;
+  drawStatusBar(barX, barY, "빛", lightPower, getLightMax(), barW,
+    lightFlash > 0.01
+      ? `rgba(${Math.round(218 + lightFlash * 37)},${Math.round(172 * (1 - lightFlash * 0.5))},68,0.96)`
+      : lightRatio < 0.2 ? `rgba(218,130,68,0.96)` : "rgba(218,172,68,0.96)",
+    lightFlash);
+  barY += rowGap;
+
+  const sanityFlash = statFlash.sanity;
+  drawStatusBar(barX, barY, "정신력", sanity, sanityMax, barW,
+    sanityFlash > 0.01
+      ? `rgba(${Math.round(96 + sanityFlash * 60)},${Math.round(124 * (1 - sanityFlash * 0.5))},163,0.94)`
+      : sanityRatio < 0.25 ? "rgba(160,80,80,0.94)" : "rgba(96,124,163,0.94)",
+    sanityFlash);
+  barY += rowGap;
+
+  const staminaFlash = statFlash.stamina;
+  drawStatusBar(barX, barY, "기력", stamina, staminaMax, barW,
+    staminaFlash > 0.01
+      ? `rgba(${Math.round(126 + staminaFlash * 50)},${Math.round(170 * (1 - staminaFlash * 0.4))},92,0.94)`
+      : runLockedByStamina ? "rgba(180,140,60,0.94)" : "rgba(126,170,92,0.94)",
+    staminaFlash);
+
+  // 조준선
   ctx.strokeStyle = "rgba(226,209,173,0.34)";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(w / 2 - 6, h / 2); ctx.lineTo(w / 2 + 6, h / 2);
-  ctx.moveTo(w / 2, h / 2 - 6); ctx.lineTo(w / 2, h / 2 + 6);
+  ctx.moveTo(w / 2 - 6, h / 2);
+  ctx.lineTo(w / 2 + 6, h / 2);
+  ctx.moveTo(w / 2, h / 2 - 6);
+  ctx.lineTo(w / 2, h / 2 + 6);
   ctx.stroke();
+
+  // 씬 표시 (기지 안일 때 작은 뱃지)
+  if (scene === "base") {
+    ctx.save();
+    ctx.fillStyle = "rgba(184,147,83,0.15)";
+    roundedRectPath(x0, y0 - 26, 80, 20, 4);
+    ctx.fill();
+    ctx.fillStyle = "rgba(210,180,110,0.7)";
+    ctx.font = "11px Georgia, serif";
+    ctx.textAlign = "left";
+    ctx.fillText("◈ 중앙 기지", x0 + 8, y0 - 11);
+    ctx.restore();
+  }
 }
 
 function drawGatheringOverlay(w, h) {
   if (!gathering) return;
 
   const progress = clamp(gathering.progress / Math.max(1, gathering.duration), 0, 1);
-  const boxW = Math.min(400, w - 40);
-  const boxH = 88;
+  const boxW = 340;
+  const boxH = 80;
   const x0 = Math.floor(w * 0.5 - boxW / 2);
-  const y0 = h - 184;
+  const y0 = h - 158;
 
-  drawOrnatePanel(x0, y0, boxW, boxH, "rgba(177,138,78,0.30)");
+  // 패널 - 펄스로 테두리 밝기 변동
+  const pulseGlow = 0.25 + Math.sin(gatherPulse) * 0.08;
+  drawOrnatePanel(x0, y0, boxW, boxH, `rgba(177,138,78,${pulseGlow})`);
 
   ctx.save();
+
+  // 자원 아이콘 원
+  const iconColors = {
+    wood: "#8f5d2d",
+    stone: "#7a7d84",
+    crystal: "#84c7ff",
+    coal: "#3a3533"
+  };
+  const iconColor = iconColors[gathering.resource] || "#a89060";
+  const iconR = 14;
+  const iconX = x0 + 22 + iconR;
+  const iconY = y0 + boxH / 2;
+
+  ctx.beginPath();
+  ctx.arc(iconX, iconY, iconR + Math.sin(gatherPulse) * 1.5, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(iconX, iconY, iconR, 0, Math.PI * 2);
+  ctx.fillStyle = iconColor;
+  ctx.fill();
+  ctx.strokeStyle = "rgba(220,195,140,0.4)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // 텍스트
+  const textX = x0 + 22 + iconR * 2 + 10;
   ctx.textAlign = "left";
   ctx.fillStyle = "rgba(230,210,167,0.94)";
-  ctx.font = "bold 18px Georgia, serif";
-  ctx.fillText(`채집 중 · ${gathering.name}`, x0 + 20, y0 + 28);
+  ctx.font = "bold 15px Georgia, serif";
+  ctx.fillText(`채집 중 · ${gathering.name}`, textX, y0 + 22);
 
   ctx.textAlign = "right";
-  ctx.fillStyle = "rgba(184,168,135,0.82)";
-  ctx.font = "14px Georgia, serif";
-  ctx.fillText(`${Math.round(progress * 100)}%`, x0 + boxW - 18, y0 + 28);
+  ctx.fillStyle = "rgba(184,168,135,0.76)";
+  ctx.font = "12px Georgia, serif";
+  ctx.fillText(`${Math.round(progress * 100)}%`, x0 + boxW - 16, y0 + 22);
 
-  drawEldenDivider(x0 + 18, y0 + 36, boxW - 36);
+  drawEldenDivider(textX, y0 + 30, boxW - textX + x0 - 16);
 
-  const barX = x0 + 20;
-  const barY = y0 + 48;
-  const barW = boxW - 40;
-  const barH = 14;
+  // 진행 바
+  const barX = textX;
+  const barY = y0 + 40;
+  const barW = boxW - (textX - x0) - 20;
+  const barH = 11;
+
   ctx.fillStyle = "rgba(0,0,0,0.62)";
   ctx.fillRect(barX - 3, barY - 3, barW + 6, barH + 6);
   ctx.fillStyle = "rgba(25,21,16,0.98)";
   ctx.fillRect(barX, barY, barW, barH);
   ctx.strokeStyle = "rgba(151,116,63,0.36)";
   ctx.strokeRect(barX - 0.5, barY - 0.5, barW + 1, barH + 1);
+
   if (progress > 0) {
     const fillW = barW * progress;
     const grad = ctx.createLinearGradient(barX, barY, barX, barY + barH);
@@ -2716,14 +3783,23 @@ function drawGatheringOverlay(w, h) {
     grad.addColorStop(1, "rgba(90,57,29,0.98)");
     ctx.fillStyle = grad;
     ctx.fillRect(barX, barY, fillW, barH);
-    ctx.fillStyle = "rgba(255,234,184,0.18)";
-    ctx.fillRect(barX + 1, barY + 1, Math.max(0, fillW - 2), 3);
+    // 반짝이 줄
+    ctx.fillStyle = "rgba(255,234,184,0.22)";
+    ctx.fillRect(barX + 1, barY + 1, Math.max(0, fillW - 2), 2);
+
+    // 진행 끝 반짝임
+    if (progress < 0.99) {
+      const pulse = 0.4 + Math.sin(gatherPulse * 3) * 0.3;
+      ctx.fillStyle = `rgba(255,210,120,${pulse})`;
+      ctx.fillRect(barX + fillW - 2, barY, 3, barH);
+    }
   }
 
   ctx.textAlign = "left";
-  ctx.fillStyle = "rgba(166,149,119,0.66)";
-  ctx.font = "13px Georgia, serif";
-  ctx.fillText("움직이면 채집이 취소됩니다.", x0 + 20, y0 + 75);
+  ctx.fillStyle = "rgba(155,140,110,0.52)";
+  ctx.font = "11px Georgia, serif";
+  ctx.fillText("움직이면 채집이 취소됩니다.", textX, y0 + barY - y0 + barH + 14);
+
   ctx.restore();
 }
 
@@ -2795,8 +3871,8 @@ function drawFullMap(w, h) {
 }
 
 function drawInventoryPanel(w, h) {
-  const boxW = Math.min(w - 80, 500);
-  const boxH = 316;
+  const boxW = Math.min(w - 120, 420);
+  const boxH = 260;
   const x0 = Math.floor((w - boxW) / 2);
   const y0 = Math.floor((h - boxH) / 2);
   const rows = [
@@ -2809,51 +3885,52 @@ function drawInventoryPanel(w, h) {
   drawOrnatePanel(x0, y0, boxW, boxH, "rgba(184,147,83,0.32)");
   ctx.save();
   ctx.fillStyle = "rgba(231,212,173,0.94)";
-  ctx.font = "bold 22px Georgia, serif";
+  ctx.font = "bold 18px Georgia, serif";
   ctx.textAlign = "left";
-  ctx.fillText("인벤토리", x0 + 24, y0 + 30);
-  ctx.fillStyle = "rgba(171,152,120,0.72)";
-  ctx.font = "14px Georgia, serif";
+  ctx.fillText("인벤토리", x0 + 22, y0 + 24);
+  ctx.fillStyle = "rgba(171,152,120,0.62)";
+  ctx.font = "12px Georgia, serif";
   ctx.textAlign = "right";
-  ctx.fillText("I 닫기", x0 + boxW - 24, y0 + 30);
-  drawEldenDivider(x0 + 22, y0 + 38, boxW - 44);
+  ctx.fillText("I 닫기", x0 + boxW - 22, y0 + 24);
+  drawEldenDivider(x0 + 20, y0 + 30, boxW - 40);
 
   rows.forEach((row, idx) => {
-    const rowY = y0 + 60 + idx * 50;
-    drawPanel(x0 + 22, rowY, boxW - 44, 38, 1, "rgba(17,15,12,0.72)", "rgba(177,143,84,0.18)");
+    const rowY = y0 + 54 + idx * 42;
+    drawPanel(x0 + 20, rowY, boxW - 40, 30, 1, "rgba(17,15,12,0.72)", "rgba(177,143,84,0.18)");
     ctx.fillStyle = row[2];
-    ctx.fillRect(x0 + 38, rowY + 14, 12, 12);
+    ctx.fillRect(x0 + 32, rowY + 11, 10, 10);
     ctx.fillStyle = "rgba(224,207,173,0.92)";
-    ctx.font = "16px Georgia, serif";
+    ctx.font = "13px Georgia, serif";
     ctx.textAlign = "left";
-    ctx.fillText(row[0], x0 + 60, rowY + 25);
+    ctx.fillText(row[0], x0 + 52, rowY + 20);
     ctx.textAlign = "right";
     ctx.fillStyle = "rgba(204,188,156,0.9)";
-    ctx.fillText(String(row[1]), x0 + boxW - 40, rowY + 25);
+    ctx.fillText(String(row[1]), x0 + boxW - 34, rowY + 20);
   });
 
-  ctx.fillStyle = "rgba(168,149,118,0.64)";
-  ctx.font = "13px Georgia, serif";
+  ctx.fillStyle = "rgba(168,149,118,0.54)";
+  ctx.font = "11px Georgia, serif";
   ctx.textAlign = "left";
-  ctx.fillText("중앙 방과 미로에서 얻은 재료입니다.", x0 + 24, y0 + boxH - 24);
+  ctx.fillText("중앙 방과 미로에서 얻은 재료입니다.", x0 + 22, y0 + boxH - 20);
   ctx.restore();
 }
 
 function drawMiniMap(w, h) {
-  const size = 188;
+  const size = 158;
   const radius = 12;
-  const x0 = w - size - 24;
-  const y0 = w < 760 ? 132 : 22;
+  const x0 = w - size - 18;
+  const y0 = w < 760 ? 126 : 18;
   const cells = radius * 2 + 1;
   const cell = size / cells;
   const px = Math.floor(x);
   const py = Math.floor(y);
 
-  drawOrnatePanel(x0 - 12, y0 - 34, size + 24, size + 48, "rgba(184,147,83,0.28)");
-  ctx.fillStyle = "rgba(224,205,162,0.9)";
-  ctx.font = "bold 15px Georgia, serif";
+  drawPanel(x0 - 8, y0 - 28, size + 16, size + 36, 8, "rgba(18,15,11,0.78)", "rgba(224,198,142,0.18)");
+
+  ctx.fillStyle = "#d8bd78";
+  ctx.font = "bold 12px Arial";
   ctx.textAlign = "center";
-  ctx.fillText("지도", x0 + size / 2, y0 - 14);
+  ctx.fillText("지도", x0 + size / 2, y0 - 10);
   ctx.textAlign = "left";
 
   for (let yy = -radius; yy <= radius; yy++) {
@@ -2865,40 +3942,13 @@ function drawMiniMap(w, h) {
       const inBounds = tx >= 0 && tx < mapW && ty >= 0 && ty < mapH;
       const tile = inBounds ? level[ty][tx] : TILE.WALL;
       const explored = inBounds && isTileExplored(tx, ty);
+
       ctx.fillStyle = getMapTileColor(tile, explored);
       ctx.fillRect(sx, sy, Math.ceil(cell), Math.ceil(cell));
     }
   }
 
-  ctx.strokeStyle = "rgba(198,166,104,0.18)";
-  ctx.strokeRect(x0 - 0.5, y0 - 0.5, size + 1, size + 1);
-  drawPlayerMapMarker(x0 + size / 2, y0 + size / 2, 5, 14);
-}
-
-function drawCraftRow(x0, y0, key, title, cost, note, done) {
-  const rowW = 452;
-  const rowH = 52;
-  const fill = done ? "rgba(62,58,38,0.42)" : "rgba(17,13,9,0.56)";
-  drawPanel(x0, y0, rowW, rowH, 2, fill, "rgba(190,165,115,0.15)");
-
-  ctx.fillStyle = "rgba(7,5,3,0.64)";
-  ctx.fillRect(x0 + 10, y0 + 10, 30, 30);
-  ctx.strokeStyle = "rgba(214,180,108,0.28)";
-  ctx.strokeRect(x0 + 10.5, y0 + 10.5, 29, 29);
-
-  ctx.fillStyle = "rgba(219,199,152,0.86)";
-  ctx.font = "bold 15px Georgia, serif";
-  ctx.textAlign = "center";
-  ctx.fillText(key, x0 + 25, y0 + 31);
-
-  ctx.textAlign = "left";
-  ctx.fillStyle = "rgba(229,215,184,0.94)";
-  ctx.font = "bold 16px Georgia, serif";
-  ctx.fillText(title, x0 + 54, y0 + 20);
-
-  ctx.fillStyle = "rgba(190,176,140,0.72)";
-  ctx.font = "13px Georgia, serif";
-  ctx.fillText(done ? note : `${cost}  ·  ${note}`, x0 + 54, y0 + 38);
+  drawPlayerMapMarker(x0 + size / 2, y0 + size / 2, 4, 13);
 }
 
 function drawCraftRow(x0, y0, key, title, cost, note, done) {
@@ -3026,39 +4076,39 @@ function drawCraftPanel(w, h) {
   const rows = getVisibleCraftRows();
   craftHotkeys = {};
 
-  const rowH = 56;
-  const boxW = Math.min(482, w - 30);
-  const boxH = Math.min(h - 52, 102 + Math.max(1, rows.length) * rowH + 34);
-  const x0 = Math.max(16, w - boxW - 18);
-  const y0 = 18;
+  const rowH = 46;
+  const boxW = 432;
+  const boxH = Math.min(h - 64, 92 + Math.max(1, rows.length) * rowH + 30);
+  const x0 = Math.max(22, w - boxW - 26);
+  const y0 = 26;
 
   drawOrnatePanel(x0, y0, boxW, boxH, "rgba(184,147,83,0.28)");
 
   ctx.fillStyle = "rgba(232,213,174,0.95)";
-  ctx.font = "bold 22px Georgia, serif";
+  ctx.font = "bold 20px Georgia, serif";
   ctx.textAlign = "left";
-  ctx.fillText("제작", x0 + 24, y0 + 30);
-  ctx.fillStyle = "rgba(177,160,127,0.72)";
-  ctx.font = "14px Georgia, serif";
-  ctx.fillText("조건이 맞는 작업만 드러납니다.", x0 + 24, y0 + 50);
-  drawEldenDivider(x0 + 22, y0 + 60, boxW - 44);
+  ctx.fillText("제작", x0 + 24, y0 + 28);
+  ctx.fillStyle = "rgba(177,160,127,0.62)";
+  ctx.font = "12px Georgia, serif";
+  ctx.fillText("조건이 맞는 작업만 드러납니다.", x0 + 24, y0 + 47);
+  drawEldenDivider(x0 + 22, y0 + 56, boxW - 44);
 
   if (rows.length === 0) {
     ctx.fillStyle = "rgba(220,204,166,0.72)";
-    ctx.font = "15px Georgia, serif";
-    ctx.fillText("지금 만들 수 있는 것이 없습니다.", x0 + 24, y0 + 102);
+    ctx.font = "13px Georgia, serif";
+    ctx.fillText("지금 만들 수 있는 것이 없습니다.", x0 + 24, y0 + 94);
   }
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const key = String((i % 9) + 1);
     craftHotkeys[`Digit${key}`] = row.item;
-    drawCraftRow(x0 + 14, y0 + 72 + i * rowH, key, row.title, row.cost, row.note, row.done);
+    drawCraftRow(x0 + 14, y0 + 68 + i * rowH, key, row.title, row.cost, row.note, row.done);
   }
 
-  ctx.fillStyle = "rgba(170,152,120,0.64)";
-  ctx.font = "13px Georgia, serif";
-  ctx.fillText("C 닫기", x0 + 24, y0 + boxH - 18);
+  ctx.fillStyle = "rgba(170,152,120,0.52)";
+  ctx.font = "12px Georgia, serif";
+  ctx.fillText("C 닫기", x0 + 24, y0 + boxH - 16);
 }
 
 function gameLoop() {
@@ -3068,13 +4118,39 @@ function gameLoop() {
 }
 
 startBtn.addEventListener("click", () => {
-  gameStarted = true;
-  menu.classList.add("hidden");
-  loadProgress();
-  loadSettings();
-  generateMaze();
-  requestGamePointerLock();
-  showMessage("C로 제작창을 열고, 방 안 자원으로 제작 기술 Lv1부터 연구하세요.");
+  try {
+    // 오디오 컨텍스트 초기화 (사용자 제스처 필요)
+    getAudioCtx();
+
+    gameStarted = true;
+    settingsOpen = false;
+    testOpen = false;
+    testPanel.classList.add("hidden");
+    mapOpen = false;
+    showCraft = false;
+    inventoryOpen = false;
+    gathering = null;
+
+    for (const code of Object.keys(keys)) keys[code] = false;
+
+    menu.classList.add("hidden");
+
+    loadProgress();
+    loadSettings();
+    sanitizeControls();
+
+    // 지금은 튜토리얼 확인 단계이므로 저장값과 관계없이 무조건 튜토리얼 방에서 시작한다.
+    setTutorialDone(false);
+    generateTutorialRoom();
+
+    updateRenderSettings(true);
+    syncCamera();
+    hideMessage();
+    requestGamePointerLock();
+  } catch (error) {
+    console.error(error);
+    showMessage("시작 오류: " + (error.message || error));
+  }
 });
 
 closeSettingsBtn.addEventListener("click", closeSettings);
@@ -3095,7 +4171,7 @@ resetGameBtn.addEventListener("click", () => {
 });
 
 closeTestBtn.addEventListener("click", closeTestPanel);
-applyTestBtn.addEventListener("click", () => queueTestApply("테스트 값 적용"));
+applyTestBtn.addEventListener("click", () => queueTestApply("테스트 값 적용", true));
 
 fillTestBtn.addEventListener("click", () => {
   testWood.value = "99";
@@ -3113,7 +4189,7 @@ fillTestBtn.addEventListener("click", () => {
   if (testSanity) testSanity.value = "100";
   if (testLight) testLight.value = "300";
 
-  queueTestApply("테스트 값 적용 - 넉넉히 채우기 완료");
+  queueTestApply("테스트 값 적용 - 넉넉히 채우기 완료", true);
 });
 
 sensitivitySlider.addEventListener("input", () => {
@@ -3135,6 +4211,12 @@ window.addEventListener("blur", () => {
 });
 
 window.addEventListener("keydown", (e) => {
+  const isMovement = isMovementInputCode(e.code) || ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight"].includes(e.code);
+
+  if (isMovement || e.code === "Space") {
+    e.preventDefault();
+  }
+
   if (bindingAction) {
     e.preventDefault();
 
@@ -3168,7 +4250,14 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (testOpen) return;
+  if (isTestPanelActuallyOpen()) return;
+
+  // 이동 입력은 저장된 단축키가 꼬여도 무조건 이동으로 먼저 처리한다.
+  // 예: 예전 저장값 때문에 map/interact가 W로 저장되어 있으면 이동이 막히던 문제 방지.
+  if (isMovement) {
+    keys[e.code] = true;
+    return;
+  }
 
   if (e.code === "KeyI") {
     inventoryOpen = !inventoryOpen;
@@ -3177,23 +4266,23 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (e.code === controls.map) {
+  if (matchesControl("map", e.code)) {
     mapOpen = !mapOpen;
     inventoryOpen = false;
     return;
   }
 
-  if (e.code === controls.reroll) {
+  if (matchesControl("reroll", e.code)) {
     changeMazeDay();
     return;
   }
 
-  if (e.code === controls.interact) {
+  if (matchesControl("interact", e.code)) {
     interact();
     return;
   }
 
-  if (e.code === controls.craft) {
+  if (matchesControl("craft", e.code)) {
     showCraft = !showCraft;
     inventoryOpen = false;
     return;
@@ -3208,9 +4297,12 @@ window.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("keyup", (e) => {
+  if (["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight", "Space"].includes(e.code)) {
+    e.preventDefault();
+  }
   keys[e.code] = false;
 
-  if (e.code === controls.run) {
+  if (matchesControl("run", e.code)) {
     sprintActive = false;
   }
 });
@@ -3223,6 +4315,7 @@ window.addEventListener("mousemove", (e) => {
 });
 
 canvas.addEventListener("click", () => {
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
   requestGamePointerLock();
 });
 
